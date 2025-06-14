@@ -33,32 +33,6 @@
         </activity>
 
 
-        <!-- AudioService foreground service -->
-        <service
-            android:name="com.ryanheise.audioservice.AudioService"
-            android:exported="true"
-            android:foregroundServiceType="mediaPlayback"
-            tools:ignore="Instantiatable">
-            <intent-filter>
-                <action android:name="android.media.browse.MediaBrowserService" />
-            </intent-filter>
-        </service>
-
-        <!-- Media button events -->
-        <receiver
-            android:name="com.ryanheise.audioservice.MediaButtonReceiver"
-            android:exported="true"
-            tools:ignore="Instantiatable">
-            <intent-filter>
-                <action android:name="android.intent.action.MEDIA_BUTTON" />
-            </intent-filter>
-        </receiver>
-
-        <!-- Optional: Media browse support (safe to include) -->
-        <activity
-            android:name="com.ryanheise.audioservice.AudioServiceActivity"
-            android:exported="true" />
-
         <!-- Required by Flutter -->
         <meta-data
             android:name="flutterEmbedding"
