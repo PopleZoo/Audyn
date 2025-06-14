@@ -1,4 +1,3 @@
-import 'package:audio_service/audio_service.dart';
 import 'package:audyn_prototype/providers/player_ui_state.dart';
 import 'package:flutter/material.dart';
 import 'package:just_audio_background/just_audio_background.dart';
@@ -16,19 +15,20 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-
-  // Initialize core services
-  final playlistManager = await PlaylistManager.create();
-  final downloadManager = DownloadManager();
-
+  // Initialize JustAudioBackground
   await JustAudioBackground.init(
     androidNotificationChannelId: 'com.example.audyn_prototype.channel.audio',
     androidNotificationChannelName: 'Audio Playback',
     androidNotificationOngoing: true,
   );
-  final audioHandler = await initAudioService();
-  final playbackManager = PlaybackManager(audioHandler);
 
+  // Initialize audio service handler
+  final audioHandler = await initAudioService();
+
+  // Initialize core services
+  final playlistManager = await PlaylistManager.create();
+  final downloadManager = DownloadManager();
+  final playbackManager = PlaybackManager(audioHandler);
 
   runApp(
     MultiProvider(
