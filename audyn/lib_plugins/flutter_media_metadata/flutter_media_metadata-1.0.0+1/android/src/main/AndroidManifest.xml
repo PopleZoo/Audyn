@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.github.ryanheise.flutter_media_metadata">
+
+    <application/>
+</manifest>
