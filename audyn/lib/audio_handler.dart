@@ -2,37 +2,54 @@ import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 
 class MyAudioHandler extends BaseAudioHandler {
-  final _player = AudioPlayer();
+  final AudioPlayer _player = AudioPlayer();
 
   MyAudioHandler() {
+    // Broadcast playback state changes
     _player.playbackEventStream.listen((event) {
       playbackState.add(_transformEvent(event));
     });
+
+    // Broadcast current media item changes when audio source changes
+    _player.currentIndexStream.listen((index) {
+      if (index != null && index < (_player.sequence?.length ?? 0)) {
+        final source = _player.sequence![index];
+        if (source.tag is MediaItem) {
+          mediaItem.add(source.tag as MediaItem);
+        }
+      }
+    });
   }
 
+  /// Converts just_audio's PlaybackEvent into audio_service's PlaybackState
   PlaybackState _transformEvent(PlaybackEvent event) {
-    final audioProcessingState = () {
-      switch (_player.processingState) {
-        case ProcessingState.idle:
-          return AudioProcessingState.idle;
-        case ProcessingState.loading:
-          return AudioProcessingState.loading;
-        case ProcessingState.buffering:
-          return AudioProcessingState.buffering;
-        case ProcessingState.ready:
-          return AudioProcessingState.ready;
-        case ProcessingState.completed:
-          return AudioProcessingState.completed;
-      }
-    }();
+    final processingState = _player.processingState;
+    AudioProcessingState audioProcessingState;
+
+    switch (processingState) {
+      case ProcessingState.idle:
+        audioProcessingState = AudioProcessingState.idle;
+        break;
+      case ProcessingState.loading:
+        audioProcessingState = AudioProcessingState.loading;
+        break;
+      case ProcessingState.buffering:
+        audioProcessingState = AudioProcessingState.buffering;
+        break;
+      case ProcessingState.ready:
+        audioProcessingState = AudioProcessingState.ready;
+        break;
+      case ProcessingState.completed:
+        audioProcessingState = AudioProcessingState.completed;
+        break;
+    }
 
     return PlaybackState(
       controls: [
-        MediaControl.pause,
-        MediaControl.play,
+        if (_player.playing) MediaControl.pause else MediaControl.play,
         MediaControl.stop,
-        MediaControl.skipToNext,
         MediaControl.skipToPrevious,
+        MediaControl.skipToNext,
       ],
       systemActions: const {
         MediaAction.seek,
@@ -45,32 +62,38 @@ class MyAudioHandler extends BaseAudioHandler {
       updatePosition: _player.position,
       bufferedPosition: _player.bufferedPosition,
       speed: _player.speed,
-      queueIndex: null,
+      queueIndex: event.currentIndex,
     );
   }
 
-  Future<void> playTrack(String uri) async {
+  // Expose position stream for UI or PlaybackManager
+  Stream<Duration> get positionStream => _player.positionStream;
+
+  /// Play a single track from URI with optional metadata
+  Future<void> playTrack(String uri,
+      {String? title,
+        String? artist,
+        String? album,
+        Uri? artUri}) async {
+    final mediaItem = MediaItem(
+      id: uri,
+      album: album ?? "Unknown Album",
+      title: title ?? "Unknown Title",
+      artist: artist ?? "Unknown Artist",
+      artUri: artUri ?? Uri.parse("https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/Black_square.jpg/120px-Black_square.jpg"),
+    );
+
     try {
-      final mediaItem = MediaItem(
-        id: uri,
-        album: "Unknown Album",
-        title: "Unknown Title",
-        artist: "Unknown Artist",
-        artUri: Uri.parse("https://example.com/artwork.png"), // Optional
-      );
-
-      await _player.setAudioSource(
-        AudioSource.uri(Uri.parse(uri), tag: mediaItem),
-      );
-
+      // Set audio source with the MediaItem tag for easy access later
+      await _player.setAudioSource(AudioSource.uri(Uri.parse(uri), tag: mediaItem));
       this.mediaItem.add(mediaItem);
-
       await _player.play();
     } catch (e) {
       print("❌ Error playing track: $e");
     }
   }
 
+  // === Override AudioHandler methods ===
 
   @override
   Future<void> play() => _player.play();
@@ -83,18 +106,34 @@ class MyAudioHandler extends BaseAudioHandler {
 
   @override
   Future<void> stop() async {
-    await _player.dispose();
+    // Don't dispose player here to allow restart; just stop playback
+    await _player.stop();
     return super.stop();
+  }
+
+  @override
+  Future<void> skipToNext() async {
+    if (_player.hasNext) {
+      await _player.seekToNext();
+    }
+  }
+
+  @override
+  Future<void> skipToPrevious() async {
+    if (_player.hasPrevious) {
+      await _player.seekToPrevious();
+    }
   }
 }
 
-// ✅ Singleton-safe global handler
+// Singleton-safe global handler
 MyAudioHandler? _audioHandlerInstance;
 bool _isAudioServiceInitializing = false;
 
-/// ✅ Initialize only once safely
+/// Initialize AudioService and return singleton handler instance
 Future<MyAudioHandler> initAudioService() async {
   if (_audioHandlerInstance != null) return _audioHandlerInstance!;
+
   if (_isAudioServiceInitializing) {
     while (_audioHandlerInstance == null) {
       await Future.delayed(const Duration(milliseconds: 50));
@@ -105,7 +144,6 @@ Future<MyAudioHandler> initAudioService() async {
   _isAudioServiceInitializing = true;
 
   try {
-    // This call will fail if already initialized
     _audioHandlerInstance = await AudioService.init(
       builder: () => MyAudioHandler(),
       config: const AudioServiceConfig(
@@ -116,11 +154,9 @@ Future<MyAudioHandler> initAudioService() async {
     );
   } catch (e) {
     print('❌ Error initializing AudioService: $e');
-
-    // Fail-safe fallback: assume it’s already initialized
+    // Fallback: manually create instance without initializing AudioService
     if (_audioHandlerInstance == null) {
-      print("⚠️ Falling back to assuming existing handler.");
-      // Build manually without reinitializing AudioService
+      print("⚠️ Falling back to manual handler creation.");
       _audioHandlerInstance = MyAudioHandler();
     } else {
       rethrow;

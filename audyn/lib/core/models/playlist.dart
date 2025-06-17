@@ -1,20 +1,29 @@
 import 'music_track.dart';
+
 class Playlist {
   final String id;
   final String name;
-  final String folderPath; // you can remove `late` since you always require it
-  List<MusicTrack> tracks; // make final to encourage immutability
+  final String folderPath;
+  List<MusicTrack> _tracks;  // private backing field for tracks
   final String? coverImagePath;
 
   Playlist({
     required this.id,
     required this.name,
     required this.folderPath,
-    List<MusicTrack>? tracks,
+    List<MusicTrack>? tracks,  // allow nullable for optional default empty list
     this.coverImagePath,
-  }) : tracks = tracks ?? [];
+  }) : _tracks = tracks ?? [];
 
-  // copyWith method to create a new Playlist with changed fields
+  // Getter for tracks
+  List<MusicTrack> get tracks => _tracks;
+
+  // Setter for tracks
+  set tracks(List<MusicTrack> newTracks) {
+    _tracks = newTracks;
+  }
+
+  // copyWith method to create a new Playlist with updated fields
   Playlist copyWith({
     String? id,
     String? name,
@@ -31,18 +40,21 @@ class Playlist {
     );
   }
 
+  // JSON deserialization factory
   factory Playlist.fromJson(Map<String, dynamic> json) {
     return Playlist(
       id: json['id'] as String,
       name: json['name'] as String,
       folderPath: json['folderPath'] as String? ?? '',
-      tracks: (json['tracks'] as List<dynamic>)
-          .map((e) => MusicTrack.fromJson(e as Map<String, dynamic>))
-          .toList(),
+      tracks: (json['tracks'] as List<dynamic>?)
+          ?.map((e) => MusicTrack.fromJson(e as Map<String, dynamic>))
+          .toList() ??
+          [],
       coverImagePath: json['coverImagePath'] as String?,
     );
   }
 
+  // JSON serialization
   Map<String, dynamic> toJson() => {
     'id': id,
     'name': name,
@@ -51,4 +63,3 @@ class Playlist {
     'coverImagePath': coverImagePath,
   };
 }
-
