@@ -12,7 +12,7 @@
     <application
         android:label="audyn"
         android:icon="@mipmap/ic_launcher">
-
+        android:enableOnBackInvokedCallback="true"
         <!-- Main activity -->
         <activity
             android:name=".MainActivity"

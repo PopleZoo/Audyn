@@ -1,440 +1,642 @@
-import 'dart:async';
 import 'dart:io';
+import 'package:audyn/features/home/playlist_detail_screen.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:audyn/utils/playlist_cover_generator.dart';
+import 'package:path/path.dart' as path;
 import 'package:provider/provider.dart';
-import '../../core/download/download_manager.dart';
+import '../../core/models/music_track.dart';
 import '../../core/models/playlist.dart';
-import '../../core/playlist/playlist_manager.dart';
 import '../../core/playback/playback_manager.dart';
-import '../../widgets/animated_bottom_player.dart';
-import '../home/search_screen.dart';
-import 'download_screen.dart';
-import 'playlist_screen.dart';
+import '../../core/playlist/playlist_manager.dart';
+
 
 class PlaylistsOverviewScreen extends StatefulWidget {
-  const PlaylistsOverviewScreen({super.key});
+  const PlaylistsOverviewScreen({Key? key}) : super(key: key);
 
   @override
   State<PlaylistsOverviewScreen> createState() => _PlaylistsOverviewScreenState();
 }
 
 class _PlaylistsOverviewScreenState extends State<PlaylistsOverviewScreen> {
-  Playlist? _deletedPlaylist;
-  Timer? _deleteTimer;
-  String _searchQuery = '';
+  final List<String> recentlyPlayed = [];
+  final List<Playlist> recentPlaylists = [];
+
+  List<Playlist> playlists = [];
+  String searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
+  bool _loading = false;
+  String _error = '';
+
+  final Color spotifyGreenStart = const Color(0xFF1DB954);
+  final Color spotifyGreenEnd = const Color(0xFF1AA34A);
 
   @override
-  void dispose() {
-    _searchController.dispose();
-    _deleteTimer?.cancel();
-    super.dispose();
+  void initState() {
+    super.initState();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final playlistManager = Provider.of<PlaylistManager>(context, listen: false);
+      playlistManager.resyncPlaylists();
+    });
+
+    _scanMusicDirectory();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final playlistManager = context.watch<PlaylistManager>();
-    final playlists = _filteredPlaylists(playlistManager.playlists);
-    final downloadManager = context.watch<DownloadManager>();
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: const Text("Your Playlists"),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: Builder(
-          builder: (context) => IconButton(
-            icon: const Icon(Icons.menu, color: Colors.white),
-            onPressed: () => Scaffold.of(context).openDrawer(),
-          ),
-        ),
-      ),
-      drawer: _buildDrawer(downloadManager),
-      body: Stack(
-        children: [
-          Column(
-            children: [
-              _buildSearchBar(),
-              Expanded(
-                child: playlists.isEmpty
-                    ? const Center(
-                  child: Text("No playlists found.",
-                      style: TextStyle(color: Colors.white54, fontSize: 16)),
-                )
-                    : _buildPlaylistGrid(playlists, playlistManager),
-              ),
-            ],
-          ),
-          const Positioned(
-            left: 0,
-            right: 0,
-            bottom: 30,
-            child: AnimatedBottomPlayer(),
-          ),
-        ],
-      ),
-    );
+  Future<void> _scanMusicDirectory() async {
+    setState(() {
+      _loading = true;
+      _error = '';
+    });
+
+    if (kIsWeb) {
+      setState(() {
+        _error = 'Storage access is not supported on Web.';
+        _loading = false;
+      });
+      return;
+    }
+
+    try {
+      Directory? musicDir;
+
+      if (Platform.isAndroid) {
+        final extDir = await getExternalStorageDirectory();
+        if (extDir != null) {
+          final appMusicDir = Directory('${extDir.path}/AudynMusic');
+          if (!await appMusicDir.exists()) {
+            await appMusicDir.create(recursive: true);
+          }
+          musicDir = appMusicDir;
+        }
+      } else if (Platform.isIOS) {
+        musicDir = await getApplicationDocumentsDirectory();
+      } else {
+        throw Exception('Unsupported platform');
+      }
+
+      if (musicDir == null || !await musicDir.exists()) {
+        throw Exception('Music directory not found.');
+      }
+
+      final foundPlaylists = await _scanPlaylists(musicDir);
+      setState(() {
+        playlists = foundPlaylists;
+        _loading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _error = 'Error: ${e.toString()}';
+        _loading = false;
+      });
+    }
   }
-
-  Widget _buildSearchBar() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      child: TextField(
-        controller: _searchController,
-        style: const TextStyle(color: Colors.white),
-        decoration: InputDecoration(
-          hintText: 'Search playlists...',
-          hintStyle: const TextStyle(color: Colors.white38),
-          filled: true,
-          fillColor: const Color(0xFF1E1E1E),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide.none,
-          ),
-          prefixIcon: const Icon(Icons.search, color: Colors.white54),
-          suffixIcon: _searchQuery.isNotEmpty
-              ? IconButton(
-            icon: const Icon(Icons.clear, color: Colors.white54),
-            onPressed: () {
-              setState(() {
-                _searchQuery = '';
-                _searchController.clear();
-              });
-            },
-          )
-              : null,
-        ),
-        onChanged: (value) {
-          setState(() {
-            _searchQuery = value.trim().toLowerCase();
-          });
-        },
-      ),
-    );
+  String generateUniqueId() {
+    return DateTime.now().millisecondsSinceEpoch.toString();
   }
-
-  List<Playlist> _filteredPlaylists(List<Playlist> allPlaylists) {
-    if (_searchQuery.isEmpty) return allPlaylists;
-    return allPlaylists
-        .where((playlist) => playlist.name.toLowerCase().contains(_searchQuery))
-        .toList();
-  }
-
-  Drawer _buildDrawer(DownloadManager downloadManager) {
-    return Drawer(
-      backgroundColor: const Color(0xFF121212),
-      child: ListView(
-        padding: EdgeInsets.zero,
-        children: [
-          const DrawerHeader(
-            decoration: BoxDecoration(color: Colors.black),
-            child: Text('Menu',
-                style: TextStyle(color: Colors.white, fontSize: 20)),
-          ),
-          ListTile(
-            leading: const Icon(Icons.search, color: Colors.white),
-            title: const Text('Search Songs', style: TextStyle(color: Colors.white)),
-            onTap: () {
-              Navigator.push(context, MaterialPageRoute(builder: (context) => const BrowseScreen()));
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.library_music, color: Colors.grey),
-            title: const Text('Playlists', style: TextStyle(color: Colors.grey)),
-            onTap: () {
-              Navigator.pop(context); // Prevent infinite stacking of this screen
-            },
-          ),
-          const Divider(color: Colors.white24),
-          ListTile(
-            leading: const Icon(Icons.download, color: Colors.white),
-            title: const Text('Downloads', style: TextStyle(color: Colors.white)),
-            onTap: () {
-              Navigator.push(context, MaterialPageRoute(builder: (context) => const DownloadScreen()));
-            },
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Download Progress', style: TextStyle(color: Colors.white70)),
-                const SizedBox(height: 6),
-                LinearProgressIndicator(
-                  value: downloadManager.overallProgress,
-                  backgroundColor: Colors.grey[800],
-                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.lightBlueAccent),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '${(downloadManager.overallProgress * 100).toStringAsFixed(0)}% completed',
-                  style: const TextStyle(color: Colors.white54, fontSize: 12),
-                )
-              ],
-            ),
-          )
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPlaylistGrid(List<Playlist> playlists, PlaylistManager manager) {
-    final playbackManager = context.read<PlaybackManager>();
-
-    return GridView.builder(
-      padding: const EdgeInsets.all(16),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        mainAxisSpacing: 16,
-        crossAxisSpacing: 16,
-        childAspectRatio: 3 / 4,
-      ),
-      itemCount: playlists.length + 1,
-      itemBuilder: (context, index) {
-        if (index == 0) return _buildCreatePlaylistTile(manager);
-
-        final playlist = playlists[index - 1];
-        final isPlaying = playbackManager.isPlaylistPlaying(playlist);
-
-        return _buildPlaylistTile(playlist, manager, playbackManager, isPlaying);
-      },
-    );
-  }
-
-  Widget _buildCreatePlaylistTile(PlaylistManager manager) {
-    return GestureDetector(
-      onTap: () async {
-        final name = await _showCreatePlaylistDialog(context);
-        if (name != null && name.isNotEmpty) {
-          final newPlaylist = await manager.createPlaylist(name);
-          if (context.mounted && newPlaylist != null) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (_) => PlaylistScreen(
-                  playlistId: newPlaylist.id,
-                  folderPath: newPlaylist.folderPath,
-                ),
-              ),
-            );
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Playlist "$name" created')),
-            );
+  Future<List<Playlist>> _scanPlaylists(Directory dir) async {
+    final List<Playlist> found = [];
+    try {
+      final entities = await dir.list().toList();
+      for (final entity in entities) {
+        if (entity is Directory) {
+          final folderName = entity.path.split(Platform.pathSeparator).last;
+          // Create Playlist with unique id and empty tracks for now
+          found.add(Playlist(id: generateUniqueId(), name: folderName, tracks: [], folderPath: dir.toString()));
+        } else if (entity is File) {
+          final ext = entity.path.split('.').last.toLowerCase();
+          if (ext == 'm3u' || ext == 'pls') {
+            final fileName = entity.path.split(Platform.pathSeparator).last;
+            found.add(Playlist(id: generateUniqueId(), name: fileName, tracks: [], folderPath: dir.toString()));
           }
         }
+      }
+    } catch (e) {
+      debugPrint('Error scanning playlists: $e');
+    }
+    return found;
+  }
+
+
+  List<Playlist> filteredPlaylists(String query) {
+    if (query.isEmpty) return playlists;
+
+    final lowerQuery = query.toLowerCase();
+
+    return playlists.where((playlist) {
+      return playlist.name.toLowerCase().contains(lowerQuery);
+    }).toList();
+  }
+
+
+
+  void _showSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  void _openPlaylist(Playlist playlist) {
+    setState(() {
+      recentPlaylists.remove(playlist.name);
+      recentPlaylists.insert(0, playlist);
+      if (recentPlaylists.length > 10) {
+        recentPlaylists.removeLast();
+      }
+    });
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PlaylistDetailScreen(
+          playlistName: playlist.name,
+          onRescan: () async {
+            await _scanMusicDirectory();
+          },
+        ),
+      ),
+    );
+
+  }
+
+  void _openRecentlyPlayed(String title) {
+    _showSnackBar('Playing recently played: $title');
+  }
+
+  Future<void> _showCreatePlaylistDialog() async {
+    String newPlaylistName = '';
+    final formKey = GlobalKey<FormState>();
+
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: Colors.grey[900],
+          title: const Text('Create New Playlist', style: TextStyle(color: Colors.white)),
+          content: Form(
+            key: formKey,
+            child: TextFormField(
+              autofocus: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: 'Playlist Name',
+                labelStyle: TextStyle(color: Colors.white70),
+                enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.white54),
+                ),
+                focusedBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Color(0xFF1DB954)),
+                ),
+              ),
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) {
+                  return 'Please enter a name';
+                }
+                if (playlists.contains(value.trim())) {
+                  return 'Playlist already exists';
+                }
+                return null;
+              },
+              onChanged: (value) => newPlaylistName = value,
+            ),
+          ),
+          actions: [
+            TextButton(
+              child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF1DB954),
+              ),
+              child: const Text('Create'),
+              onPressed: () {
+                if (formKey.currentState?.validate() ?? false) {
+                  Navigator.of(context).pop();
+                  _createPlaylist(newPlaylistName.trim());
+                }
+              },
+            ),
+          ],
+        );
       },
+    );
+  }
+
+  Future<void> _createPlaylist(String name) async {
+    Directory? musicDir;
+
+    try {
+      if (Platform.isAndroid) {
+        final extDir = await getExternalStorageDirectory();
+        if (extDir != null) {
+          musicDir = Directory('${extDir.path}/AudynMusic');
+        }
+      } else if (Platform.isIOS) {
+        musicDir = await getApplicationDocumentsDirectory();
+      }
+
+      if (musicDir != null) {
+        final playlistDir = Directory('${musicDir.path}/$name');
+
+        List<MusicTrack> scannedTracks = [];
+
+        if (await playlistDir.exists()) {
+          // Folder exists - scan for songs
+          scannedTracks = await scanFolderForTracks(playlistDir);
+        } else {
+          // Folder does not exist - create it
+          await playlistDir.create(recursive: true);
+        }
+
+        // Create playlist object (assuming you have a Playlist class)
+        final newPlaylist = Playlist(
+          id: generateUniqueId(),
+          name: name,
+          folderPath: playlistDir.path,
+          tracks: scannedTracks,
+        );
+
+        // Add to your playlists list
+        setState(() {
+          playlists.add(newPlaylist);
+        });
+
+        _showSnackBar('Playlist "$name" created with ${scannedTracks.length} tracks.');
+
+        await generatePlaylistCover(playlistDir.path);
+      } else {
+        _showSnackBar('Error: Could not determine music directory.');
+      }
+    } catch (e) {
+      debugPrint('Error creating playlist folder: $e');
+      _showSnackBar('Error creating playlist folder.');
+    }
+  }
+
+// Helper function to scan folder for music files
+  Future<List<MusicTrack>> scanFolderForTracks(Directory folder) async {
+    final List<MusicTrack> foundTracks = [];
+
+    final files = folder.listSync(recursive: true);
+    for (var file in files) {
+      if (file is File) {
+        final ext = path.extension(file.path).toLowerCase();
+        if (['.mp3', '.wav', '.flac', '.m4a'].contains(ext)) {
+          foundTracks.add(MusicTrack(
+            id: file.path,
+            title: path.basenameWithoutExtension(file.path),
+            artist: 'Unknown', // Optional: add metadata extraction here
+            localPath: file.path,
+            coverUrl: '',
+          ));
+        }
+      }
+    }
+
+    return foundTracks;
+  }
+  Widget _buildPlaylistTile(Playlist playlist) {
+    return Consumer2<PlaylistManager, PlaybackManager>(
+      builder: (context, playlistManager, playback, _) {
+        final isPlaylistPlaying =
+            playback.isPlaying && playback.currentPlaylistId == playlist.name;
+
+        return FutureBuilder<File?>(
+          future: _getPlaylistCover(playlist.name).catchError((_) => null),
+          builder: (context, snapshot) {
+            final coverFile = snapshot.data;
+            return Material(
+              key: ValueKey(coverFile?.path),
+              borderRadius: BorderRadius.circular(12),
+              clipBehavior: Clip.hardEdge,
+              child: coverFile != null
+                  ? Ink.image(
+                image: FileImage(coverFile),
+                fit: BoxFit.cover,
+                height: 120,
+                child: InkWell(
+                  onTap: () => _openPlaylist(playlist),
+                  child: _buildTileOverlay(playlist, playback, isPlaylistPlaying),
+                ),
+              )
+                  : InkWell(
+                onTap: () => _openPlaylist(playlist),
+                child: Container(
+                  height: 120,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade800,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Stack(
+                    children: [
+                      _buildTileOverlay(playlist, playback, isPlaylistPlaying),
+                      const Center(
+                        child: Icon(
+                          Icons.music_note,
+                          size: 60,
+                          color: Colors.white54,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+
+
+  Future<File> _getPlaylistCover(String playlistName) async {
+    Directory? musicDir;
+
+    if (Platform.isAndroid) {
+      final extDir = await getExternalStorageDirectory();
+      if (extDir != null) musicDir = Directory('${extDir.path}/AudynMusic');
+    } else if (Platform.isIOS) {
+      musicDir = await getApplicationDocumentsDirectory();
+    }
+
+    if (musicDir == null) throw Exception('Music directory not found');
+
+    final cover = File('${musicDir.path}/$playlistName/cover.jpg');
+    if (!await cover.exists()) throw Exception('Cover not found');
+
+    return cover;
+  }
+
+  Widget _buildCreatePlaylistTile() {
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: _showCreatePlaylistDialog,
       child: Container(
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
-          borderRadius: BorderRadius.circular(16),
+          color: Colors.white12,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: spotifyGreenStart),
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
-          children: const [
-            Icon(Icons.add_circle_outline, size: 48, color: Colors.white70),
-            SizedBox(height: 12),
-            Text('Create Playlist', style: TextStyle(color: Colors.white70, fontSize: 14)),
+          children: [
+            Icon(Icons.add_circle_outline, size: 48, color: spotifyGreenStart),
+            const SizedBox(height: 8),
+            Text(
+              'Create Playlist',
+              style: TextStyle(
+                color: spotifyGreenStart,
+                fontWeight: FontWeight.w600,
+                fontSize: 16,
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildPlaylistTile(Playlist playlist, PlaylistManager manager, PlaybackManager playbackManager, bool isPlaying) {
-    return Dismissible(
-      key: Key(playlist.id),
-      direction: DismissDirection.endToStart,
-      background: Container(
-        decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(16)),
-        alignment: Alignment.centerRight,
-        padding: const EdgeInsets.only(right: 20),
-        child: const Icon(Icons.delete, color: Colors.white),
-      ),
-      confirmDismiss: (_) => _handleDismiss(context, manager, playlist),
-      child: GestureDetector(
-        onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => PlaylistScreen(
-                playlistId: playlist.id,
-                folderPath: playlist.folderPath,
-              ),
-            ),
-          );
-        },
-        child: Container(
-          decoration: BoxDecoration(
-            color: const Color(0xFF1E1E1E),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildCoverImage(playlist),
-              Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      playlist.name,
-                      style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    Text(
-                      "${playlist.tracks.length} ${playlist.tracks.length == 1 ? "track" : "tracks"}",
-                      style: const TextStyle(color: Colors.white70, fontSize: 12),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.shuffle),
-                          color: playbackManager.isPlaylistShuffled(playlist)
-                              ? Colors.lightBlueAccent
-                              : Colors.white70,
-                          tooltip: 'Toggle Shuffle',
-                          onPressed: () {
-                            setState(() {
-                              playbackManager.toggleShuffleForPlaylist(playlist);
-                            });
-                          },
-                        ),
-                        Consumer<PlaybackManager>(
-                          builder: (context, playback, _) {
-                            final isCurrent = playback.isCurrentPlaylist(playlist);
-                            final isPlaying = isCurrent && playback.isPlaying;
+  Widget _buildPlaylistsGrid() {
+    final tiles = <Widget>[_buildCreatePlaylistTile()];
+    tiles.addAll(filteredPlaylists(searchQuery).map(_buildPlaylistTile));
 
-                            return IconButton(
-                              icon: Icon(
-                                isPlaying ? Icons.pause : Icons.play_arrow,
-                                color: Colors.white,
-                              ),
-                              tooltip: isPlaying ? 'Pause' : 'Play',
-                              onPressed: () async {
-                                if (isPlaying) {
-                                  playback.pause();
-                                } else if (isCurrent) {
-                                  playback.resume();
-                                } else {
-                                  await playback.setPlaylist(
-                                    playlist.tracks,
-                                    shuffle: playback.isPlaylistShuffled(playlist),
-                                    playlistId: playlist.id,
-                                  );
-                                }
-                              },
-                            );
-                          },
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                          tooltip: 'Delete Playlist',
-                          onPressed: () async {
-                            final confirm = await showDialog<bool>(
-                              context: context,
-                              builder: (context) => AlertDialog(
-                                title: const Text('Delete Playlist'),
-                                content: Text('Are you sure you want to delete "${playlist.name}"?'),
-                                actions: [
-                                  TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-                                  TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
-                                ],
-                              ),
-                            );
-                            if (confirm == true) {
-                              await _handleDismiss(context, manager, playlist);
-                            }
-                          },
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: tiles.length,
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 2,
+        crossAxisSpacing: 16,
+        mainAxisSpacing: 16,
+        childAspectRatio: 1,
+      ),
+      itemBuilder: (_, index) => tiles[index],
+    );
+  }
+
+
+  Widget _buildRecentPlaylistsSection() {
+    final uniqueRecent = recentPlaylists.toSet().toList();
+
+    if (uniqueRecent.isEmpty) return const SizedBox();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Recent Playlists',
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+          ),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 160,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: uniqueRecent.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 16),
+            itemBuilder: (context, index) {
+              final name = uniqueRecent[index];
+              return SizedBox(
+                width: 160,
+                child: _buildPlaylistTile(name),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+
+  Widget _buildPlaylistsSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Playlists',
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _searchController,
+          onChanged: (value) => setState(() => searchQuery = value),
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: 'Search playlists',
+            hintStyle: const TextStyle(color: Colors.white54),
+            filled: true,
+            fillColor: Colors.white12,
+            prefixIcon: const Icon(Icons.search, color: Colors.white54),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(30),
+              borderSide: BorderSide.none,
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(30),
+              borderSide: BorderSide(color: spotifyGreenStart),
+            ),
+            contentPadding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _buildPlaylistsGrid(),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        elevation: 0,
+        title: const Text(
+          'Playlists',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+        ),
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          child: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _error.isNotEmpty
+              ? Center(
+            child: Text(
+              _error,
+              style: const TextStyle(color: Colors.redAccent),
+              textAlign: TextAlign.center,
+            ),
+          )
+              : ListView(
+            children: [
+              _buildRecentPlaylistsSection(),
+              const SizedBox(height: 32),
+              _buildPlaylistsSection(),
             ],
           ),
         ),
       ),
     );
   }
-
-  Future<bool> _handleDismiss(BuildContext context, PlaylistManager manager, Playlist playlist) async {
-    _deletedPlaylist = playlist;
-    manager.removePlaylist(playlist.id);
-
-    final snackBar = SnackBar(
-      content: Text('Deleted "${playlist.name}"'),
-      duration: const Duration(seconds: 5),
-      action: SnackBarAction(
-        label: 'Undo',
-        onPressed: () {
-          _deleteTimer?.cancel();
-          manager.restorePlaylist(_deletedPlaylist!);
-          _deletedPlaylist = null;
-        },
-      ),
-    );
-
-    ScaffoldMessenger.of(context).showSnackBar(snackBar);
-    _deleteTimer?.cancel();
-    _deleteTimer = Timer(snackBar.duration, () {
-      _deletedPlaylist = null;
-    });
-
-    return false;
-  }
-
-  Widget _buildCoverImage(Playlist playlist) {
-    if (playlist.coverImagePath != null &&
-        playlist.coverImagePath!.isNotEmpty &&
-        File(playlist.coverImagePath!).existsSync()) {
-      return ClipRRect(
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-        child: Image.file(
-          File(playlist.coverImagePath!),
-          fit: BoxFit.cover,
-          height: 120,
-          width: double.infinity,
-          errorBuilder: (_, __, ___) => _defaultCoverIcon(),
-        ),
-      );
-    }
-    return _defaultCoverIcon();
-  }
-
-  Widget _defaultCoverIcon() {
-    return Container(
-      height: 120,
-      decoration: const BoxDecoration(
-        color: Color(0xFF1A1A1A),
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      child: const Center(
-        child: Icon(Icons.music_note, color: Colors.white54, size: 64),
-      ),
-    );
-  }
-
-  Future<String?> _showCreatePlaylistDialog(BuildContext context) {
-    final controller = TextEditingController();
-    return showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Create New Playlist'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'Playlist name'),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(context, controller.text.trim()), child: const Text('Create')),
-        ],
-      ),
-    );
-  }
 }
+
+Widget _buildTileOverlay(Playlist playlist, PlaybackManager playback, bool isPlaylistPlaying) {
+  return Stack(
+    children: [
+      // Dark overlay
+      Positioned.fill(
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                Colors.black.withOpacity(0.6),
+                Colors.black.withOpacity(0.3),
+                Colors.transparent,
+              ],
+              begin: Alignment.bottomCenter,
+              end: Alignment.topCenter,
+            ),
+          ),
+        ),
+      ),
+
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Playlist title
+            Text(
+              playlist.name,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                overflow: TextOverflow.ellipsis,
+              ),
+              maxLines: 1,
+            ),
+
+            const SizedBox(height: 4),
+
+            // Track count
+            Text(
+              '${playlist.tracks.length} tracks',
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 14,
+              ),
+            ),
+
+            const Spacer(),
+
+            // Buttons (play / shuffle)
+            Row(
+              mainAxisAlignment: MainAxisAlignment.start,
+              children: [
+                // Play / Pause
+                CircleAvatar(
+                  radius: 22,
+                  backgroundColor: Colors.greenAccent,
+                  child: IconButton(
+                    icon: Icon(
+                      isPlaylistPlaying ? Icons.pause : Icons.play_arrow,
+                      color: Colors.black87,
+                      size: 22,
+                    ),
+                    onPressed: () {
+                      if (isPlaylistPlaying) {
+                        playback.pause();
+                      } else {
+                        playback.setPlaylist(
+                          playlist.tracks,
+                          shuffle: false,
+                          playlistId: playlist.name,
+                        );
+                        playback.playTrack(playlist.tracks.first); // start playback
+                      }
+                    },
+                    tooltip: 'Play',
+                  ),
+                ),
+                const Spacer(),
+
+                // Shuffle
+                CircleAvatar(
+                  radius: 22,
+                  backgroundColor: Colors.white24,
+                  child: IconButton(
+                    icon: const Icon(Icons.shuffle, color: Colors.white, size: 20),
+                    onPressed: () {
+                      playback.setPlaylist(
+                        playlist.tracks,
+                        shuffle: true,
+                        playlistId: playlist.name,
+                      );
+                      playback.play(); // will start playback from shuffled list
+                    },
+
+                    tooltip: 'Shuffle Play',
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ],
+  );
+}
+
