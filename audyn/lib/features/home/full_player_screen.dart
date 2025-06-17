@@ -1,3 +1,5 @@
+import 'package:audio_service/audio_service.dart';
+import 'package:audyn/audio_handler.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/playback/playback_manager.dart';
@@ -16,6 +18,7 @@ class _FullPlayerScreenState extends State<FullPlayerScreen> {
   @override
   Widget build(BuildContext context) {
     final playbackManager = Provider.of<PlaybackManager>(context);
+    final audioHandler = Provider.of<MyAudioHandler>(context, listen: false);
     final track = playbackManager.currentTrack;
 
     if (track == null) {
@@ -48,7 +51,6 @@ class _FullPlayerScreenState extends State<FullPlayerScreen> {
         body: SafeArea(
           child: Column(
             children: [
-              // Close Button
               Align(
                 alignment: Alignment.topLeft,
                 child: IconButton(
@@ -67,11 +69,17 @@ class _FullPlayerScreenState extends State<FullPlayerScreen> {
                         tag: 'albumArtHero',
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(16),
-                          child: Image.file(
+                          child: track.coverFile != null
+                              ? Image.file(
                             track.coverFile!,
                             width: MediaQuery.of(context).size.width * 0.8,
                             height: MediaQuery.of(context).size.width * 0.8,
                             fit: BoxFit.cover,
+                          )
+                              : Icon(
+                            Icons.music_note,
+                            size: MediaQuery.of(context).size.width * 0.8,
+                            color: Colors.grey[700],
                           ),
                         ),
                       ),
@@ -95,19 +103,11 @@ class _FullPlayerScreenState extends State<FullPlayerScreen> {
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 32),
-
-                      // Progress Bar with time
                       _buildProgressBar(playbackManager),
-
                       const SizedBox(height: 32),
-
-                      // Playback controls
-                      _buildPlaybackControls(playbackManager),
-
+                      _buildPlaybackControls(audioHandler, playbackManager),
                       const SizedBox(height: 40),
-
-                      // Extra controls (shuffle, repeat)
-                      _buildExtraControls(playbackManager),
+                      _buildExtraControls(audioHandler, playbackManager),
                     ],
                   ),
                 ),
@@ -154,7 +154,9 @@ class _FullPlayerScreenState extends State<FullPlayerScreen> {
     );
   }
 
-  Widget _buildPlaybackControls(PlaybackManager playbackManager) {
+  Widget _buildPlaybackControls(MyAudioHandler handler, PlaybackManager playbackManager) {
+    final isPlaying = playbackManager.isPlaying;
+
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -162,17 +164,17 @@ class _FullPlayerScreenState extends State<FullPlayerScreen> {
           iconSize: 36,
           color: Colors.white70,
           icon: const Icon(Icons.skip_previous),
-          onPressed: playbackManager.previous,
+          onPressed: handler.skipToPrevious,
         ),
         const SizedBox(width: 32),
         IconButton(
           iconSize: 56,
           color: Colors.white,
           icon: Icon(
-            playbackManager.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
+            isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
           ),
           onPressed: () {
-            playbackManager.isPlaying ? playbackManager.pause() : playbackManager.play();
+            isPlaying ? handler.pause() : handler.play();
           },
         ),
         const SizedBox(width: 32),
@@ -180,34 +182,77 @@ class _FullPlayerScreenState extends State<FullPlayerScreen> {
           iconSize: 36,
           color: Colors.white70,
           icon: const Icon(Icons.skip_next),
-          onPressed: playbackManager.next,
+          onPressed: handler.skipToNext,
         ),
       ],
     );
   }
 
-  Widget _buildExtraControls(PlaybackManager playbackManager) {
+  Widget _buildExtraControls(MyAudioHandler handler, PlaybackManager playbackManager) {
+    final repeatMode = playbackManager.repeatMode;
+    final shuffleEnabled = playbackManager.isShuffleEnabled;
+
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         IconButton(
           icon: Icon(
-            playbackManager.isShuffleEnabled ? Icons.shuffle : Icons.shuffle_outlined,
-            color: playbackManager.isShuffleEnabled ? Colors.greenAccent : Colors.white70,
+            shuffleEnabled ? Icons.shuffle : Icons.shuffle_outlined,
+            color: shuffleEnabled ? Colors.greenAccent : Colors.white70,
           ),
-          onPressed: playbackManager.toggleShuffle,
+          onPressed: () {
+            handler.setShuffleMode(
+              shuffleEnabled
+                  ? AudioServiceShuffleMode.none
+                  : AudioServiceShuffleMode.all,
+            );
+          },
         ),
         const SizedBox(width: 48),
         IconButton(
           icon: Icon(
-            playbackManager.repeatMode == RepeatMode.off
+            repeatMode == RepeatMode.off
                 ? Icons.repeat_outlined
-                : playbackManager.repeatMode == RepeatMode.one
+                : repeatMode == RepeatMode.one
                 ? Icons.repeat_one
                 : Icons.repeat,
-            color: playbackManager.repeatMode == RepeatMode.off ? Colors.white70 : Colors.greenAccent,
+            color: repeatMode == RepeatMode.off
+                ? Colors.white70
+                : Colors.greenAccent,
           ),
-          onPressed: playbackManager.cycleRepeatMode,
+          onPressed: () {
+            RepeatMode nextMode;
+            switch (repeatMode) {
+              case RepeatMode.off:
+                nextMode = RepeatMode.all;
+                break;
+              case RepeatMode.all:
+                nextMode = RepeatMode.one;
+                break;
+              case RepeatMode.one:
+                nextMode = RepeatMode.off;
+                break;
+              case RepeatMode.group:
+                throw UnimplementedError('Group repeat mode not supported.');
+            }
+
+            AudioServiceRepeatMode serviceMode;
+            switch (nextMode) {
+              case RepeatMode.off:
+                serviceMode = AudioServiceRepeatMode.none;
+                break;
+              case RepeatMode.all:
+                serviceMode = AudioServiceRepeatMode.all;
+                break;
+              case RepeatMode.one:
+                serviceMode = AudioServiceRepeatMode.one;
+                break;
+              case RepeatMode.group:
+                throw UnimplementedError('Group repeat mode not supported.');
+            }
+
+            handler.setRepeatMode(serviceMode);
+          },
         ),
       ],
     );
@@ -216,7 +261,6 @@ class _FullPlayerScreenState extends State<FullPlayerScreen> {
   String _formatDuration(Duration duration) {
     final minutes = duration.inMinutes;
     final seconds = duration.inSeconds % 60;
-    final secondsStr = seconds.toString().padLeft(2, '0');
-    return '$minutes:$secondsStr';
+    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 }

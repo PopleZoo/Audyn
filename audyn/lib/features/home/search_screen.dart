@@ -386,7 +386,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                             selectedTagFilter = selected ? null : tag;
                           });
                         },
-                        selectedColor: Colors.greenAccent[400],
+                        selectedColor: Colors.lightBlueAccent,
                         backgroundColor: Colors.grey[800],
                         labelStyle: const TextStyle(color: Colors.white),
                       ),
@@ -438,7 +438,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                           }
                         });
                       },
-                      selectedColor: Colors.greenAccent[400],
+                      selectedColor: Colors.lightBlueAccent,
                       backgroundColor: Colors.grey[800],
                       checkmarkColor: Colors.black,
                     ),
@@ -477,7 +477,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                             selectedRatingFilter = selected ? null : rating;
                           });
                         },
-                        selectedColor: Colors.greenAccent[400],
+                        selectedColor: Colors.lightBlueAccent,
                         backgroundColor: Colors.grey[800],
                         labelStyle: const TextStyle(color: Colors.white),
                       ),
@@ -518,7 +518,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                             selectedDurationFilter = selected ? null : dur;
                           });
                         },
-                        selectedColor: Colors.greenAccent[400],
+                        selectedColor: Colors.lightBlueAccent,
                         backgroundColor: Colors.grey[800],
                         labelStyle: const TextStyle(color: Colors.white),
                       ),
@@ -540,7 +540,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                       });
                     },
                     fillColor: MaterialStateProperty.all(
-                        Colors.greenAccent[400]),
+                        Colors.lightBlueAccent),
                   ),
                   const Text(
                     "Allow NSFW",
@@ -685,7 +685,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
             SizedBox(height: 4),
             Row(
               children: [
-                Icon(Icons.cloud, size: 14, color: Colors.greenAccent[400]),
+                Icon(Icons.cloud, size: 14, color: Colors.lightBlueAccent),
                 SizedBox(width: 4),
                 Text('$swarmSeeds seeds',
                     style: TextStyle(color: Colors.grey[400], fontSize: 12)),
@@ -712,9 +712,9 @@ class _BrowseScreenState extends State<BrowseScreen> {
               padding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
               backgroundColor: isRequested
                   ? Colors.orangeAccent
-                  : (available ? Colors.greenAccent[400] : Colors.transparent),
+                  : (available ? Colors.lightBlueAccent : Colors.transparent),
               side: !available && !isRequested
-                  ? BorderSide(color: Colors.greenAccent[400]!)
+                  ? BorderSide(color: Colors.lightBlueAccent!)
                   : null,
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(20)),
@@ -738,7 +738,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
                 fontSize: 12,
                 color: isRequested
                     ? Colors.black
-                    : (available ? Colors.black : Colors.greenAccent[400]),
+                    : (available ? Colors.black : Colors.lightBlueAccent),
               ),
               overflow: TextOverflow.ellipsis,
             ),
@@ -806,11 +806,11 @@ class _BrowseScreenState extends State<BrowseScreen> {
                 },
                 icon: Icon(
                   showAdvancedFilters ? Icons.filter_alt_off : Icons.filter_alt,
-                  color: Colors.greenAccent[400],
+                  color: Colors.lightBlueAccent,
                 ),
                 label: Text(
                   showAdvancedFilters ? 'Hide Filters' : 'Show Filters',
-                  style: TextStyle(color: Colors.greenAccent[400]),
+                  style: TextStyle(color: Colors.lightBlueAccent),
                 ),
               ),
             ),
@@ -826,7 +826,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
             if (isLoading)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 8),
-                child: LinearProgressIndicator(color: Colors.greenAccent),
+                child: LinearProgressIndicator(color: Colors.lightBlueAccent),
               ),
 
             const SizedBox(height: 12),

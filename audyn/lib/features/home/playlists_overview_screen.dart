@@ -29,8 +29,8 @@ class _PlaylistsOverviewScreenState extends State<PlaylistsOverviewScreen> {
   bool _loading = false;
   String _error = '';
 
-  final Color spotifyGreenStart = const Color(0xFF1DB954);
-  final Color spotifyGreenEnd = const Color(0xFF1AA34A);
+  final Color spotifyGreenStart = Colors.lightBlueAccent;
+  final Color spotifyGreenEnd = Colors.lightBlueAccent;
 
   @override
   void initState() {
@@ -180,14 +180,14 @@ class _PlaylistsOverviewScreenState extends State<PlaylistsOverviewScreen> {
             child: TextFormField(
               autofocus: true,
               style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Playlist Name',
-                labelStyle: TextStyle(color: Colors.white70),
-                enabledBorder: UnderlineInputBorder(
+                labelStyle: const TextStyle(color: Colors.white70),
+                enabledBorder: const UnderlineInputBorder(
                   borderSide: BorderSide(color: Colors.white54),
                 ),
                 focusedBorder: UnderlineInputBorder(
-                  borderSide: BorderSide(color: Color(0xFF1DB954)),
+                  borderSide: BorderSide(color: Colors.lightBlueAccent),
                 ),
               ),
               validator: (value) {
@@ -209,7 +209,7 @@ class _PlaylistsOverviewScreenState extends State<PlaylistsOverviewScreen> {
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF1DB954),
+                backgroundColor: Colors.lightBlueAccent,
               ),
               child: const Text('Create'),
               onPressed: () {
@@ -601,7 +601,7 @@ Widget _buildTileOverlay(Playlist playlist, PlaybackManager playback, bool isPla
                 // Play / Pause
                 CircleAvatar(
                   radius: 22,
-                  backgroundColor: Colors.greenAccent,
+                  backgroundColor: Colors.lightBlueAccent,
                   child: IconButton(
                     icon: Icon(
                       isPlaylistPlaying ? Icons.pause : Icons.play_arrow,

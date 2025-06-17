@@ -8,7 +8,7 @@ import '../models/playlist.dart';
 enum RepeatMode {
   off,
   one,
-  all,
+  all, group,
 }
 
 class PlaybackManager extends ChangeNotifier {
@@ -254,8 +254,10 @@ class PlaybackManager extends ChangeNotifier {
       case RepeatMode.one:
         _repeatMode = RepeatMode.off;
         break;
+      case RepeatMode.group:
+        _repeatMode = RepeatMode.group;
+
     }
-    // TODO: Sync this with _audioHandler if it supports repeat modes
     notifyListeners();
   }
 
