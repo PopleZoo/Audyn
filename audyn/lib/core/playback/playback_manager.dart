@@ -30,6 +30,12 @@ class PlaybackManager extends ChangeNotifier {
 
   int get currentIndex => _currentIndex;
 
+  /// Expose playback state stream for UI listening if needed
+  Stream playBackStateStream() => _audioHandler.playbackState;
+
+  /// Expose current playback position stream
+  Stream<Duration> get positionStream => _audioHandler.positionStream;
+
   // === LOGIC ===
 
   /// Sets the current playlist and optionally shuffles it.
@@ -39,9 +45,9 @@ class PlaybackManager extends ChangeNotifier {
         bool shuffle = false,
         String? playlistId,
       }) async {
-    // If the playlist is the same and not empty, just resume playing
     if (_currentPlaylistId == playlistId && _playlist.isNotEmpty) {
       await _audioHandler.play();
+      notifyListeners();
       return;
     }
 
@@ -72,11 +78,14 @@ class PlaybackManager extends ChangeNotifier {
 
   /// Plays the track at the current index.
   Future<void> _playCurrent() async {
-    if (_currentIndex >= 0 && _currentIndex < _playlist.length) {
-      final track = _playlist[_currentIndex];
-      if (track.localPath != null) {
-        await _audioHandler.playTrack(track.localPath!);
-      }
+    if (_currentIndex < 0 || _currentIndex >= _playlist.length) return;
+
+    final track = _playlist[_currentIndex];
+    if (track.localPath != null) {
+      await _audioHandler.playTrack(track.localPath!);
+      notifyListeners();
+    } else {
+      debugPrint('[PlaybackManager] Track path is null: ${track.id}');
     }
   }
 
@@ -86,14 +95,24 @@ class PlaybackManager extends ChangeNotifier {
     if (index != -1) {
       _currentIndex = index;
       await _playCurrent();
+      notifyListeners();
     }
   }
 
-  Future<void> pause() => _audioHandler.pause();
+  Future<void> pause() async {
+    await _audioHandler.pause();
+    notifyListeners();
+  }
 
-  Future<void> play() => _audioHandler.play();
+  Future<void> play() async {
+    await _audioHandler.play();
+    notifyListeners();
+  }
 
-  Future<void> seek(Duration position) => _audioHandler.seek(position);
+  Future<void> seek(Duration position) async {
+    await _audioHandler.seek(position);
+    notifyListeners();
+  }
 
   Future<void> next() async {
     if (_currentIndex < _playlist.length - 1) {
@@ -123,7 +142,6 @@ class PlaybackManager extends ChangeNotifier {
       _originalOrder = null;
     }
 
-    // Keep the shuffle state map in sync
     if (_currentPlaylistId != null) {
       _playlistShuffleStates[_currentPlaylistId!] = _isShuffled;
     }
@@ -140,19 +158,25 @@ class PlaybackManager extends ChangeNotifier {
 
   Future<void> seekToStart() async {
     await _audioHandler.seek(Duration.zero);
+    notifyListeners();
   }
 
   bool isPlaylistPlaying(Playlist playlist) =>
       _audioHandler.playbackState.value.playing &&
           _currentPlaylistId == playlist.id;
 
-  bool isCurrentPlaylist(Playlist playlist) =>
-      _currentPlaylistId == playlist.id;
+  bool isCurrentPlaylist(Playlist playlist) => _currentPlaylistId == playlist.id;
 
   bool isPlaylistShuffled(Playlist playlist) =>
       _playlistShuffleStates[playlist.id] ?? false;
 
   Future<void> resume() async {
     await _audioHandler.play();
+    notifyListeners();
+  }
+
+  Future<void> stop() async {
+    await _audioHandler.stop();
+    notifyListeners();
   }
 }

@@ -298,11 +298,11 @@ class _PlaylistsOverviewScreenState extends State<PlaylistsOverviewScreen> {
 
     return foundTracks;
   }
-  Widget _buildPlaylistTile(Playlist playlist) {
+  Widget _buildPlaylistTile(Playlist _playlist) {
     return Consumer2<PlaylistManager, PlaybackManager>(
       builder: (context, playlistManager, playback, _) {
-        final isPlaylistPlaying =
-            playback.isPlaying && playback.currentPlaylistId == playlist.name;
+        final playlist = playlistManager.playlists.firstWhere((p) => p.name == _playlist.name);
+        final isPlaylistPlaying = playback.isPlaying && playback.currentPlaylistId == playlist.name;
 
         return FutureBuilder<File?>(
           future: _getPlaylistCover(playlist.name).catchError((_) => null),
@@ -596,19 +596,18 @@ Widget _buildTileOverlay(Playlist playlist, PlaybackManager playback, bool isPla
                       color: Colors.black87,
                       size: 22,
                     ),
-                    onPressed: () {
+                    onPressed: () async {
                       if (isPlaylistPlaying) {
-                        playback.pause();
+                        await playback.pause();
                       } else {
-                        playback.setPlaylist(
+                        await playback.setPlaylist(
                           playlist.tracks,
                           shuffle: false,
                           playlistId: playlist.name,
                         );
-                        playback.playTrack(playlist.tracks.first); // start playback
                       }
                     },
-                    tooltip: 'Play',
+                    tooltip: isPlaylistPlaying ? 'Pause' : 'Play',
                   ),
                 ),
                 const Spacer(),
@@ -619,15 +618,13 @@ Widget _buildTileOverlay(Playlist playlist, PlaybackManager playback, bool isPla
                   backgroundColor: Colors.white24,
                   child: IconButton(
                     icon: const Icon(Icons.shuffle, color: Colors.white, size: 20),
-                    onPressed: () {
-                      playback.setPlaylist(
+                    onPressed: () async {
+                      await playback.setPlaylist(
                         playlist.tracks,
                         shuffle: true,
                         playlistId: playlist.name,
                       );
-                      playback.play(); // will start playback from shuffled list
                     },
-
                     tooltip: 'Shuffle Play',
                   ),
                 ),
@@ -639,4 +636,3 @@ Widget _buildTileOverlay(Playlist playlist, PlaybackManager playback, bool isPla
     ],
   );
 }
-

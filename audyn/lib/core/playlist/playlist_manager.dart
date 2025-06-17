@@ -80,6 +80,7 @@ class PlaylistManager extends ChangeNotifier {
     if (!await _baseDir.exists()) {
       await _baseDir.create(recursive: true);
     }
+    notifyListeners(); // <== Add here so UI updates after loading from prefs
   }
 
   Future<void> _loadFromPrefs() async {
@@ -89,8 +90,10 @@ class PlaylistManager extends ChangeNotifier {
       final List<dynamic> jsonList = json.decode(jsonString);
       _playlists.clear();
       _playlists.addAll(jsonList.map((e) => Playlist.fromJson(e)));
+      notifyListeners(); // <== Add here so UI updates after loading from prefs
     }
   }
+
 
   Future<void> _saveToPrefs() async {
     final prefs = await SharedPreferences.getInstance();
