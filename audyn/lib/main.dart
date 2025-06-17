@@ -1,58 +1,95 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:just_audio_background/just_audio_background.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
 import 'audio_handler.dart';
-import 'core/download/download_manager.dart';
-import 'core/playlist/playlist_manager.dart';
 import 'core/playback/playback_manager.dart';
+import 'core/playlist/playlist_manager.dart';
 import 'features/home/playlists_overview_screen.dart';
-import 'providers/player_ui_state.dart';
+import 'features/home/search_screen.dart';
+import 'features/home/download_screen.dart';
+import 'features/player/Bottom_player.dart';
 
+// Global navigator key if needed
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+class AppWithPlayer extends StatefulWidget {
+  const AppWithPlayer({Key? key}) : super(key: key);
 
-  await JustAudioBackground.init(
-    androidNotificationChannelId: 'com.example.audyn.channel.audio',
-    androidNotificationChannelName: 'Audio Playback',
-    androidNotificationOngoing: true,
-  );
+  @override
+  State<AppWithPlayer> createState() => _AppWithPlayerState();
+}
 
-  await _requestNotificationPermissionIfNeeded();
+class _AppWithPlayerState extends State<AppWithPlayer> {
+  int _selectedIndex = 0;
 
-  final playlistManager = await PlaylistManager.create();
-  final downloadManager = DownloadManager();
-  final audioHandler = await initAudioService();
-  final playbackManager = PlaybackManager(audioHandler);
+  static final List<Widget> _pages = [
+    const PlaylistsOverviewScreen(),
+    const BrowseScreen(),
+    const DownloadScreen(),
+  ];
+
+  void _onItemTapped(int index) {
+    setState(() {
+      _selectedIndex = index;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final playbackManager = context.watch<PlaybackManager>();
+
+    return Scaffold(
+      body: Stack(
+        children: [
+          _pages[_selectedIndex],
+          if (playbackManager.showBottomPlayer)
+            Align(
+              alignment: Alignment.bottomCenter,
+              child: BottomPlayer(),
+            ),
+        ],
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _selectedIndex,
+        onTap: _onItemTapped,
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.home),
+            label: 'Home',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.search),
+            label: 'Search',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.download),
+            label: 'Downloads',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+void main() {
+  final audioHandler = MyAudioHandler();
 
   runApp(
     MultiProvider(
       providers: [
-        ChangeNotifierProvider<PlaylistManager>.value(value: playlistManager),
-        ChangeNotifierProvider<DownloadManager>.value(value: downloadManager),
-        ChangeNotifierProvider<PlaybackManager>.value(value: playbackManager),
-        ChangeNotifierProvider<PlayerUIState>(create: (_) => PlayerUIState()),
+        ChangeNotifierProvider(
+          create: (_) => PlaybackManager(audioHandler),
+        ),
+        ChangeNotifierProvider(create: (_) => PlaylistManager()),
+        // Add other providers here
       ],
       child: const AudynApp(),
     ),
   );
 }
 
-Future<void> _requestNotificationPermissionIfNeeded() async {
-  if (Platform.isAndroid) {
-    final status = await Permission.notification.status;
-    if (status.isDenied || status.isRestricted) {
-      await Permission.notification.request();
-    }
-  }
-}
-
 class AudynApp extends StatelessWidget {
-  const AudynApp({super.key});
+  const AudynApp({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -60,7 +97,7 @@ class AudynApp extends StatelessWidget {
       navigatorKey: navigatorKey,
       title: 'Audyn',
       theme: ThemeData.dark(),
-      home: const PlaylistsOverviewScreen(),
+      home: const AppWithPlayer(),
     );
   }
 }

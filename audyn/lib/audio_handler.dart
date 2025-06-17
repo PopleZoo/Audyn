@@ -1,7 +1,7 @@
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 
-class MyAudioHandler extends BaseAudioHandler {
+class MyAudioHandler extends BaseAudioHandler with SeekHandler {
   final AudioPlayer _player = AudioPlayer();
 
   MyAudioHandler() {
@@ -18,6 +18,12 @@ class MyAudioHandler extends BaseAudioHandler {
           mediaItem.add(source.tag as MediaItem);
         }
       }
+    });
+
+    // Broadcast duration changes
+    _player.durationStream.listen((duration) {
+      // No built-in mediaItem duration update in audio_service,
+      // but you can update your UI if needed by exposing durationStream.
     });
   }
 
@@ -55,6 +61,8 @@ class MyAudioHandler extends BaseAudioHandler {
         MediaAction.seek,
         MediaAction.seekForward,
         MediaAction.seekBackward,
+        MediaAction.setRepeatMode,
+        MediaAction.setShuffleMode,
       },
       androidCompactActionIndices: const [0, 1, 3],
       processingState: audioProcessingState,
@@ -63,11 +71,42 @@ class MyAudioHandler extends BaseAudioHandler {
       bufferedPosition: _player.bufferedPosition,
       speed: _player.speed,
       queueIndex: event.currentIndex,
+      repeatMode: _mapJustAudioRepeatModeToAudioService(_player.loopMode),
+      shuffleMode: _player.shuffleModeEnabled
+          ? AudioServiceShuffleMode.all
+          : AudioServiceShuffleMode.none,
     );
   }
 
-  // Expose position stream for UI or PlaybackManager
+  // Helpers to map just_audio <-> audio_service repeat modes
+  AudioServiceRepeatMode _mapJustAudioRepeatModeToAudioService(LoopMode mode) {
+    switch (mode) {
+      case LoopMode.off:
+        return AudioServiceRepeatMode.none;
+      case LoopMode.one:
+        return AudioServiceRepeatMode.one;
+      case LoopMode.all:
+        return AudioServiceRepeatMode.all;
+    }
+  }
+
+  LoopMode _mapAudioServiceRepeatModeToJustAudio(AudioServiceRepeatMode mode) {
+    switch (mode) {
+      case AudioServiceRepeatMode.none:
+        return LoopMode.off;
+      case AudioServiceRepeatMode.one:
+        return LoopMode.one;
+      case AudioServiceRepeatMode.all:
+        return LoopMode.all;
+      case AudioServiceRepeatMode.group:
+        // TODO: Handle this case.
+        throw UnimplementedError();
+    }
+  }
+
+  // Expose position & duration streams for external use
   Stream<Duration> get positionStream => _player.positionStream;
+  Stream<Duration?> get durationStream => _player.durationStream;
 
   /// Play a single track from URI with optional metadata
   Future<void> playTrack(String uri,
@@ -80,11 +119,12 @@ class MyAudioHandler extends BaseAudioHandler {
       album: album ?? "Unknown Album",
       title: title ?? "Unknown Title",
       artist: artist ?? "Unknown Artist",
-      artUri: artUri ?? Uri.parse("https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/Black_square.jpg/120px-Black_square.jpg"),
+      artUri: artUri ??
+          Uri.parse(
+              "https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/Black_square.jpg/120px-Black_square.jpg"),
     );
 
     try {
-      // Set audio source with the MediaItem tag for easy access later
       await _player.setAudioSource(AudioSource.uri(Uri.parse(uri), tag: mediaItem));
       this.mediaItem.add(mediaItem);
       await _player.play();
@@ -106,7 +146,6 @@ class MyAudioHandler extends BaseAudioHandler {
 
   @override
   Future<void> stop() async {
-    // Don't dispose player here to allow restart; just stop playback
     await _player.stop();
     return super.stop();
   }
@@ -123,6 +162,28 @@ class MyAudioHandler extends BaseAudioHandler {
     if (_player.hasPrevious) {
       await _player.seekToPrevious();
     }
+  }
+
+  @override
+  Future<void> setRepeatMode(AudioServiceRepeatMode repeatMode) async {
+    final loopMode = _mapAudioServiceRepeatModeToJustAudio(repeatMode);
+    await _player.setLoopMode(loopMode);
+    playbackState.add(playbackState.value.copyWith(repeatMode: repeatMode));
+  }
+
+  @override
+  Future<void> setShuffleMode(AudioServiceShuffleMode shuffleMode) async {
+    final enableShuffle = shuffleMode == AudioServiceShuffleMode.all;
+    await _player.setShuffleModeEnabled(enableShuffle);
+
+    // When enabling shuffle, shuffle the queue
+    if (enableShuffle) {
+      await _player.shuffle();
+    }
+
+    playbackState.add(playbackState.value.copyWith(
+      shuffleMode: shuffleMode,
+    ));
   }
 }
 

@@ -1,7 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import '../../audio_handler.dart';
 import '../models/music_track.dart';
 import '../models/playlist.dart';
+
+enum RepeatMode {
+  off,
+  one,
+  all,
+}
 
 class PlaybackManager extends ChangeNotifier {
   final MyAudioHandler _audioHandler;
@@ -14,7 +22,38 @@ class PlaybackManager extends ChangeNotifier {
   final Map<String, bool> _playlistShuffleStates = {};
   String? _currentPlaylistId;
 
-  PlaybackManager(this._audioHandler);
+  // Repeat mode state
+  RepeatMode _repeatMode = RepeatMode.off;
+
+  // Position and duration tracking
+  Duration? _currentPosition;
+  Duration? _currentDuration;
+
+  // Control visibility of the bottom player UI
+  bool _showBottomPlayer = false;
+
+  // Stream subscriptions for cleanup
+  StreamSubscription<Duration>? _positionSubscription;
+  StreamSubscription<Duration?>? _durationSubscription;
+
+  PlaybackManager(this._audioHandler) {
+    // Listen to playback position updates
+    _positionSubscription = _audioHandler.positionStream.listen((pos) {
+      _currentPosition = pos;
+      notifyListeners();
+    });
+
+    // Listen to duration updates (some players may provide null sometimes)
+    _durationSubscription = _audioHandler.durationStream.listen((dur) {
+      _currentDuration = dur;
+      notifyListeners();
+    });
+
+    // Optionally, listen to playback state changes to update bottom player visibility
+    _audioHandler.playbackState.listen((state) {
+      _updateBottomPlayerVisibility(state.playing);
+    });
+  }
 
   // === GETTERS ===
 
@@ -25,10 +64,16 @@ class PlaybackManager extends ChangeNotifier {
           ? _playlist[_currentIndex]
           : null;
 
-  bool get shuffleEnabled => _isShuffled;
+  bool get isShuffleEnabled => _isShuffled;
   String? get currentPlaylistId => _currentPlaylistId;
-
   int get currentIndex => _currentIndex;
+
+  Duration? get currentPosition => _currentPosition;
+  Duration? get currentDuration => _currentDuration;
+
+  RepeatMode get repeatMode => _repeatMode;
+
+  bool get showBottomPlayer => _showBottomPlayer;
 
   /// Expose playback state stream for UI listening if needed
   Stream playBackStateStream() => _audioHandler.playbackState;
@@ -36,7 +81,32 @@ class PlaybackManager extends ChangeNotifier {
   /// Expose current playback position stream
   Stream<Duration> get positionStream => _audioHandler.positionStream;
 
-  // === LOGIC ===
+  // === PRIVATE METHODS ===
+
+  /// Update bottom player visibility based on playing status or track availability
+  void _updateBottomPlayerVisibility(bool isPlaying) {
+    final shouldShow = isPlaying || currentTrack != null;
+    if (_showBottomPlayer != shouldShow) {
+      _showBottomPlayer = shouldShow;
+      notifyListeners();
+    }
+  }
+
+  /// Play the current track based on _currentIndex
+  Future<void> _playCurrent() async {
+    if (_currentIndex < 0 || _currentIndex >= _playlist.length) return;
+
+    final track = _playlist[_currentIndex];
+    if (track.localPath != null) {
+      await _audioHandler.playTrack(track.localPath!);
+      _updateBottomPlayerVisibility(true);
+      notifyListeners();
+    } else {
+      debugPrint('[PlaybackManager] Track path is null: ${track.id}');
+    }
+  }
+
+  // === PUBLIC METHODS ===
 
   /// Sets the current playlist and optionally shuffles it.
   /// If the same playlist is already loaded, resumes playing.
@@ -47,6 +117,7 @@ class PlaybackManager extends ChangeNotifier {
       }) async {
     if (_currentPlaylistId == playlistId && _playlist.isNotEmpty) {
       await _audioHandler.play();
+      _updateBottomPlayerVisibility(true);
       notifyListeners();
       return;
     }
@@ -76,19 +147,6 @@ class PlaybackManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Plays the track at the current index.
-  Future<void> _playCurrent() async {
-    if (_currentIndex < 0 || _currentIndex >= _playlist.length) return;
-
-    final track = _playlist[_currentIndex];
-    if (track.localPath != null) {
-      await _audioHandler.playTrack(track.localPath!);
-      notifyListeners();
-    } else {
-      debugPrint('[PlaybackManager] Track path is null: ${track.id}');
-    }
-  }
-
   /// Plays a specific track if it exists in the current playlist.
   Future<void> playTrack(MusicTrack track) async {
     final index = _playlist.indexWhere((t) => t.id == track.id);
@@ -101,11 +159,13 @@ class PlaybackManager extends ChangeNotifier {
 
   Future<void> pause() async {
     await _audioHandler.pause();
+    _updateBottomPlayerVisibility(false);
     notifyListeners();
   }
 
   Future<void> play() async {
     await _audioHandler.play();
+    _updateBottomPlayerVisibility(true);
     notifyListeners();
   }
 
@@ -172,11 +232,38 @@ class PlaybackManager extends ChangeNotifier {
 
   Future<void> resume() async {
     await _audioHandler.play();
+    _updateBottomPlayerVisibility(true);
     notifyListeners();
   }
 
   Future<void> stop() async {
     await _audioHandler.stop();
+    _updateBottomPlayerVisibility(false);
     notifyListeners();
+  }
+
+  /// Cycle repeat mode: off -> all -> one -> off
+  void cycleRepeatMode() {
+    switch (_repeatMode) {
+      case RepeatMode.off:
+        _repeatMode = RepeatMode.all;
+        break;
+      case RepeatMode.all:
+        _repeatMode = RepeatMode.one;
+        break;
+      case RepeatMode.one:
+        _repeatMode = RepeatMode.off;
+        break;
+    }
+    // TODO: Sync this with _audioHandler if it supports repeat modes
+    notifyListeners();
+  }
+
+  /// Dispose stream subscriptions properly to avoid leaks
+  @override
+  void dispose() {
+    _positionSubscription?.cancel();
+    _durationSubscription?.cancel();
+    super.dispose();
   }
 }
