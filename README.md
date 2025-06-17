@@ -15,31 +15,6 @@
 
 ---
 
-## 🚀 Getting Started
-
-### Prerequisites
-- [Flutter SDK](https://flutter.dev/docs/get-started/install)  
-- Dart 3.x  
-- Android Studio or compatible IDE  
-
-### Clone and Run
-```bash
-git clone https://github.com/your-username/audyn.git
-cd audyn
-flutter pub get
-flutter run
-```
-📦 If your project uses large assets or .torrent metadata, be sure to run git lfs install if you're using Git LFS.
----
-### 📁 Project Structure
-```bash
-lib/
-├── models/         # MusicTrack, Playlist, Torrent metadata
-├── services/       # Playback, Metadata, Torrent Engine
-├── ui/             # Screens, Widgets, Player
-├── utils/          # Helpers and constants
-```
----
 ### ⚠️ Legal Disclaimer
 
 Audyn does not host, index, or distribute copyrighted content.
