@@ -1,4 +1,5 @@
 import 'package:audio_service/audio_service.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:just_audio/just_audio.dart';
 
 class MyAudioHandler extends BaseAudioHandler with SeekHandler {
@@ -10,51 +11,34 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler {
       playbackState.add(_transformEvent(event));
     });
 
-    // Broadcast current media item changes when audio source changes
+    // Update mediaItem when current index changes
     _player.currentIndexStream.listen((index) {
-      if (index != null && index < (_player.sequence?.length ?? 0)) {
-        final source = _player.sequence![index];
-        if (source.tag is MediaItem) {
-          mediaItem.add(source.tag as MediaItem);
+      final sequence = _player.sequence;
+      if (index != null && sequence != null && index < sequence.length) {
+        final tag = sequence[index].tag;
+        if (tag is MediaItem) {
+          mediaItem.add(tag);
         }
       }
     });
 
-    // Broadcast duration changes
-    _player.durationStream.listen((duration) {
-      // No built-in mediaItem duration update in audio_service,
-      // but you can update your UI if needed by exposing durationStream.
+    // Listen for player state changes for error handling or idle state
+    _player.playerStateStream.listen((state) {
+      if (state.processingState == ProcessingState.idle && !state.playing) {
+        playbackState.add(playbackState.value.copyWith(
+          processingState: AudioProcessingState.idle,
+          playing: false,
+        ));
+      }
     });
   }
 
-  /// Converts just_audio's PlaybackEvent into audio_service's PlaybackState
   PlaybackState _transformEvent(PlaybackEvent event) {
-    final processingState = _player.processingState;
-    AudioProcessingState audioProcessingState;
-
-    switch (processingState) {
-      case ProcessingState.idle:
-        audioProcessingState = AudioProcessingState.idle;
-        break;
-      case ProcessingState.loading:
-        audioProcessingState = AudioProcessingState.loading;
-        break;
-      case ProcessingState.buffering:
-        audioProcessingState = AudioProcessingState.buffering;
-        break;
-      case ProcessingState.ready:
-        audioProcessingState = AudioProcessingState.ready;
-        break;
-      case ProcessingState.completed:
-        audioProcessingState = AudioProcessingState.completed;
-        break;
-    }
-
     return PlaybackState(
       controls: [
-        if (_player.playing) MediaControl.pause else MediaControl.play,
-        MediaControl.stop,
         MediaControl.skipToPrevious,
+        _player.playing ? MediaControl.pause : MediaControl.play,
+        MediaControl.stop,
         MediaControl.skipToNext,
       ],
       systemActions: const {
@@ -65,7 +49,7 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler {
         MediaAction.setShuffleMode,
       },
       androidCompactActionIndices: const [0, 1, 3],
-      processingState: audioProcessingState,
+      processingState: _mapProcessingState(_player.processingState),
       playing: _player.playing,
       updatePosition: _player.position,
       bufferedPosition: _player.bufferedPosition,
@@ -78,7 +62,21 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler {
     );
   }
 
-  // Helpers to map just_audio <-> audio_service repeat modes
+  AudioProcessingState _mapProcessingState(ProcessingState state) {
+    switch (state) {
+      case ProcessingState.idle:
+        return AudioProcessingState.idle;
+      case ProcessingState.loading:
+        return AudioProcessingState.loading;
+      case ProcessingState.buffering:
+        return AudioProcessingState.buffering;
+      case ProcessingState.ready:
+        return AudioProcessingState.ready;
+      case ProcessingState.completed:
+        return AudioProcessingState.completed;
+    }
+  }
+
   AudioServiceRepeatMode _mapJustAudioRepeatModeToAudioService(LoopMode mode) {
     switch (mode) {
       case LoopMode.off:
@@ -99,42 +97,44 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler {
       case AudioServiceRepeatMode.all:
         return LoopMode.all;
       case AudioServiceRepeatMode.group:
-        // TODO: Handle this case.
-        throw UnimplementedError();
+        throw UnimplementedError('Group repeat mode is not supported');
     }
   }
 
-  // Expose position & duration streams for external use
+  // Optional streams you can expose if needed
   Stream<Duration> get positionStream => _player.positionStream;
   Stream<Duration?> get durationStream => _player.durationStream;
 
-  /// Play a single track from URI with optional metadata
-  Future<void> playTrack(String uri,
-      {String? title,
+  Future<void> playTrack(
+      String uri, {
+        String? title,
         String? artist,
         String? album,
-        Uri? artUri}) async {
-    final mediaItem = MediaItem(
+        Uri? artUri,
+      }) async {
+    final item = MediaItem(
       id: uri,
-      album: album ?? "Unknown Album",
-      title: title ?? "Unknown Title",
-      artist: artist ?? "Unknown Artist",
+      title: title ?? 'Unknown Title',
+      artist: artist ?? 'Unknown Artist',
+      album: album ?? 'Unknown Album',
       artUri: artUri ??
           Uri.parse(
-              "https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/Black_square.jpg/120px-Black_square.jpg"),
+            'https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/Black_square.jpg/120px-Black_square.jpg',
+          ),
     );
 
     try {
-      await _player.setAudioSource(AudioSource.uri(Uri.parse(uri), tag: mediaItem));
-      this.mediaItem.add(mediaItem);
+      final source = AudioSource.uri(Uri.parse(uri), tag: item);
+      await _player.setAudioSource(source);
+      await setQueue([item]); // Important for skip controls to work
+      await setMediaItem(item);
       await _player.play();
     } catch (e) {
-      print("❌ Error playing track: $e");
+      print('❌ Error in playTrack: $e');
     }
   }
 
-  // === Override AudioHandler methods ===
-
+  // === Playback Commands ===
   @override
   Future<void> play() => _player.play();
 
@@ -142,13 +142,13 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler {
   Future<void> pause() => _player.pause();
 
   @override
-  Future<void> seek(Duration position) => _player.seek(position);
-
-  @override
   Future<void> stop() async {
     await _player.stop();
-    return super.stop();
+    await super.stop();
   }
+
+  @override
+  Future<void> seek(Duration position) => _player.seek(position);
 
   @override
   Future<void> skipToNext() async {
@@ -165,66 +165,42 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   @override
-  Future<void> setRepeatMode(AudioServiceRepeatMode repeatMode) async {
-    final loopMode = _mapAudioServiceRepeatModeToJustAudio(repeatMode);
+  Future<void> setRepeatMode(AudioServiceRepeatMode mode) async {
+    final loopMode = _mapAudioServiceRepeatModeToJustAudio(mode);
     await _player.setLoopMode(loopMode);
-    playbackState.add(playbackState.value.copyWith(repeatMode: repeatMode));
+    playbackState.add(playbackState.value.copyWith(repeatMode: mode));
   }
 
   @override
-  Future<void> setShuffleMode(AudioServiceShuffleMode shuffleMode) async {
-    final enableShuffle = shuffleMode == AudioServiceShuffleMode.all;
+  Future<void> setShuffleMode(AudioServiceShuffleMode mode) async {
+    final enableShuffle = mode == AudioServiceShuffleMode.all;
     await _player.setShuffleModeEnabled(enableShuffle);
-
-    // When enabling shuffle, shuffle the queue
     if (enableShuffle) {
       await _player.shuffle();
     }
+    playbackState.add(playbackState.value.copyWith(shuffleMode: mode));
+  }
 
-    playbackState.add(playbackState.value.copyWith(
-      shuffleMode: shuffleMode,
-    ));
+  @override
+  Future<void> setQueue(List<MediaItem> items) async {
+    queue.add(items);
+  }
+
+  @override
+  Future<void> setMediaItem(MediaItem item) async {
+    mediaItem.add(item);
   }
 }
-
-// Singleton-safe global handler
-MyAudioHandler? _audioHandlerInstance;
-bool _isAudioServiceInitializing = false;
-
-/// Initialize AudioService and return singleton handler instance
 Future<MyAudioHandler> initAudioService() async {
-  if (_audioHandlerInstance != null) return _audioHandlerInstance!;
-
-  if (_isAudioServiceInitializing) {
-    while (_audioHandlerInstance == null) {
-      await Future.delayed(const Duration(milliseconds: 50));
-    }
-    return _audioHandlerInstance!;
-  }
-
-  _isAudioServiceInitializing = true;
-
-  try {
-    _audioHandlerInstance = await AudioService.init(
-      builder: () => MyAudioHandler(),
-      config: const AudioServiceConfig(
-        androidNotificationChannelId: 'com.example.audyn_prototype.channel.audio',
-        androidNotificationChannelName: 'Audio Playback',
-        androidNotificationOngoing: true,
-      ),
-    );
-  } catch (e) {
-    print('❌ Error initializing AudioService: $e');
-    // Fallback: manually create instance without initializing AudioService
-    if (_audioHandlerInstance == null) {
-      print("⚠️ Falling back to manual handler creation.");
-      _audioHandlerInstance = MyAudioHandler();
-    } else {
-      rethrow;
-    }
-  } finally {
-    _isAudioServiceInitializing = false;
-  }
-
-  return _audioHandlerInstance!;
+  final handler = MyAudioHandler();
+  await AudioService.init(
+    builder: () => handler,
+    config: AudioServiceConfig(
+      androidNotificationChannelId: 'com.example.audyn.channel.audio',
+      androidNotificationChannelName: 'Audyn Playback',
+      androidNotificationOngoing: true,
+    ),
+  );
+  debugPrint("✅ AudioHandler initialized: $handler");
+  return handler;
 }
