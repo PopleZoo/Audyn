@@ -300,54 +300,66 @@ class _PlaylistsOverviewScreenState extends State<PlaylistsOverviewScreen> {
   }
   Widget _buildPlaylistTile(Playlist _playlist) {
     return Consumer2<PlaylistManager, PlaybackManager>(
-      builder: (context, playlistManager, playback, _) {
-        final playlist = playlistManager.playlists.firstWhere((p) => p.name == _playlist.name);
-        final isPlaylistPlaying = playback.isPlaying && playback.currentPlaylistId == playlist.name;
+        builder: (context, playlistManager, playback, _) {
+          final matchingPlaylists = playlistManager.playlists.where((p) => p.name == _playlist.name);
 
-        return FutureBuilder<File?>(
-          future: _getPlaylistCover(playlist.name).catchError((_) => null),
-          builder: (context, snapshot) {
-            final coverFile = snapshot.data;
-            return Material(
-              key: ValueKey(coverFile?.path),
-              borderRadius: BorderRadius.circular(12),
-              clipBehavior: Clip.hardEdge,
-              child: coverFile != null
-                  ? Ink.image(
-                image: FileImage(coverFile),
-                fit: BoxFit.cover,
-                height: 120,
-                child: InkWell(
-                  onTap: () => _openPlaylist(playlist),
-                  child: _buildTileOverlay(playlist, playback, isPlaylistPlaying),
-                ),
-              )
-                  : InkWell(
-                onTap: () => _openPlaylist(playlist),
-                child: Container(
+          if (matchingPlaylists.isEmpty) {
+            return SizedBox.shrink(); // or any placeholder widget
+          }
+
+          final playlist = matchingPlaylists.first;
+
+
+          if (playlist == null) {
+            return SizedBox.shrink();
+          }
+
+          final isPlaylistPlaying = playback.isPlaying && playback.currentPlaylistId == playlist.name;
+
+          return FutureBuilder<File?>(
+            future: _getPlaylistCover(playlist.name).catchError((_) => null),
+            builder: (context, snapshot) {
+              final coverFile = snapshot.data;
+              return Material(
+                key: ValueKey(coverFile?.path),
+                borderRadius: BorderRadius.circular(12),
+                clipBehavior: Clip.hardEdge,
+                child: coverFile != null
+                    ? Ink.image(
+                  image: FileImage(coverFile),
+                  fit: BoxFit.cover,
                   height: 120,
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade800,
-                    borderRadius: BorderRadius.circular(12),
+                  child: InkWell(
+                    onTap: () => _openPlaylist(playlist),
+                    child: _buildTileOverlay(playlist, playback, isPlaylistPlaying),
                   ),
-                  child: Stack(
-                    children: [
-                      _buildTileOverlay(playlist, playback, isPlaylistPlaying),
-                      const Center(
-                        child: Icon(
-                          Icons.music_note,
-                          size: 60,
-                          color: Colors.white54,
+                )
+                    : InkWell(
+                  onTap: () => _openPlaylist(playlist),
+                  child: Container(
+                    height: 120,
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade800,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Stack(
+                      children: [
+                        _buildTileOverlay(playlist, playback, isPlaylistPlaying),
+                        const Center(
+                          child: Icon(
+                            Icons.music_note,
+                            size: 60,
+                            color: Colors.white54,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            );
-          },
-        );
-      },
+              );
+            },
+          );
+        }
     );
   }
 

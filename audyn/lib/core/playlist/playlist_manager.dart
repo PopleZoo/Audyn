@@ -14,6 +14,7 @@ import '../models/music_track.dart';
 import '../models/playlist.dart';
 
 class PlaylistManager extends ChangeNotifier {
+  PlaylistManager();
   static const _prefsPlaylistsKey = 'playlists_data';
   static const _mainFolderName = 'AudynMusic';
 
