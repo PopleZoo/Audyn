@@ -28,16 +28,24 @@ class PlaybackManager extends ChangeNotifier {
   bool get shuffleEnabled => _isShuffled;
   String? get currentPlaylistId => _currentPlaylistId;
 
+  int get currentIndex => _currentIndex;
+
   // === LOGIC ===
 
-  Future<void> setPlaylist(List<MusicTrack> tracks,
-      {bool shuffle = false, String? playlistId}) async {
+  /// Sets the current playlist and optionally shuffles it.
+  /// If the same playlist is already loaded, resumes playing.
+  Future<void> setPlaylist(
+      List<MusicTrack> tracks, {
+        bool shuffle = false,
+        String? playlistId,
+      }) async {
+    // If the playlist is the same and not empty, just resume playing
     if (_currentPlaylistId == playlistId && _playlist.isNotEmpty) {
       await _audioHandler.play();
       return;
     }
 
-    _playlist = List.from(tracks);
+    _playlist = List.of(tracks);
     _isShuffled = shuffle;
     _currentPlaylistId = playlistId;
     _currentIndex = 0;
@@ -46,22 +54,33 @@ class PlaybackManager extends ChangeNotifier {
       _playlistShuffleStates[playlistId] = shuffle;
     }
 
+    if (_playlist.isEmpty) {
+      debugPrint('[PlaybackManager] Attempted to set an empty playlist.');
+      return;
+    }
+
     if (shuffle) {
-      _originalOrder = List.from(_playlist);
+      _originalOrder = List.of(_playlist);
       _playlist.shuffle();
+    } else {
+      _originalOrder = null;
     }
 
     await _playCurrent();
     notifyListeners();
   }
 
+  /// Plays the track at the current index.
   Future<void> _playCurrent() async {
     if (_currentIndex >= 0 && _currentIndex < _playlist.length) {
       final track = _playlist[_currentIndex];
-      await _audioHandler.playTrack(track.localPath!);
+      if (track.localPath != null) {
+        await _audioHandler.playTrack(track.localPath!);
+      }
     }
   }
 
+  /// Plays a specific track if it exists in the current playlist.
   Future<void> playTrack(MusicTrack track) async {
     final index = _playlist.indexWhere((t) => t.id == track.id);
     if (index != -1) {
@@ -71,13 +90,16 @@ class PlaybackManager extends ChangeNotifier {
   }
 
   Future<void> pause() => _audioHandler.pause();
+
   Future<void> play() => _audioHandler.play();
-  Future<void> seek(Duration pos) => _audioHandler.seek(pos);
+
+  Future<void> seek(Duration position) => _audioHandler.seek(position);
 
   Future<void> next() async {
     if (_currentIndex < _playlist.length - 1) {
       _currentIndex++;
       await _playCurrent();
+      notifyListeners();
     }
   }
 
@@ -85,22 +107,31 @@ class PlaybackManager extends ChangeNotifier {
     if (_currentIndex > 0) {
       _currentIndex--;
       await _playCurrent();
+      notifyListeners();
     }
   }
 
+  /// Toggles shuffle on/off for the current playlist in memory.
   void toggleShuffle() {
     _isShuffled = !_isShuffled;
 
     if (_isShuffled) {
-      _originalOrder = List.from(_playlist);
+      _originalOrder = List.of(_playlist);
       _playlist.shuffle();
     } else if (_originalOrder != null) {
-      _playlist = List.from(_originalOrder!);
+      _playlist = List.of(_originalOrder!);
+      _originalOrder = null;
+    }
+
+    // Keep the shuffle state map in sync
+    if (_currentPlaylistId != null) {
+      _playlistShuffleStates[_currentPlaylistId!] = _isShuffled;
     }
 
     notifyListeners();
   }
 
+  /// Toggles shuffle state flag for a specific playlist (does not reorder tracks).
   void toggleShuffleForPlaylist(Playlist playlist) {
     final current = _playlistShuffleStates[playlist.id] ?? false;
     _playlistShuffleStates[playlist.id] = !current;
@@ -124,5 +155,4 @@ class PlaybackManager extends ChangeNotifier {
   Future<void> resume() async {
     await _audioHandler.play();
   }
-
 }

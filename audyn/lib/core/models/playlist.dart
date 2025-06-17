@@ -1,19 +1,35 @@
 import 'music_track.dart';
-
 class Playlist {
   final String id;
   final String name;
-  late final String folderPath; // local folder path where songs are stored
-  List<MusicTrack> tracks;
-  String? coverImagePath;
+  final String folderPath; // you can remove `late` since you always require it
+  List<MusicTrack> tracks; // make final to encourage immutability
+  final String? coverImagePath;
 
   Playlist({
     required this.id,
     required this.name,
     required this.folderPath,
-    required this.tracks,
+    List<MusicTrack>? tracks,
+    this.coverImagePath,
+  }) : tracks = tracks ?? [];
 
-  });
+  // copyWith method to create a new Playlist with changed fields
+  Playlist copyWith({
+    String? id,
+    String? name,
+    String? folderPath,
+    List<MusicTrack>? tracks,
+    String? coverImagePath,
+  }) {
+    return Playlist(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      folderPath: folderPath ?? this.folderPath,
+      tracks: tracks ?? this.tracks,
+      coverImagePath: coverImagePath ?? this.coverImagePath,
+    );
+  }
 
   factory Playlist.fromJson(Map<String, dynamic> json) {
     return Playlist(
@@ -23,6 +39,7 @@ class Playlist {
       tracks: (json['tracks'] as List<dynamic>)
           .map((e) => MusicTrack.fromJson(e as Map<String, dynamic>))
           .toList(),
+      coverImagePath: json['coverImagePath'] as String?,
     );
   }
 
@@ -31,5 +48,7 @@ class Playlist {
     'name': name,
     'folderPath': folderPath,
     'tracks': tracks.map((e) => e.toJson()).toList(),
+    'coverImagePath': coverImagePath,
   };
 }
+

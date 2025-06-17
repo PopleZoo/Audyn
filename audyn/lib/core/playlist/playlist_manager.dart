@@ -7,7 +7,9 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
+
 import '../../main.dart';
+import '../../utils/playlist_cover_generator.dart';
 import '../models/music_track.dart';
 import '../models/playlist.dart';
 
@@ -18,7 +20,7 @@ class PlaylistManager extends ChangeNotifier {
   final List<Playlist> _playlists = [];
   final Uuid _uuid = Uuid();
 
-  late final Directory _baseDir;
+  late Directory _baseDir;
 
   List<Playlist> get playlists => List.unmodifiable(_playlists);
   String get baseDirPath => _baseDir.path;
@@ -29,6 +31,36 @@ class PlaylistManager extends ChangeNotifier {
     final manager = PlaylistManager._();
     await manager._initialize();
     return manager;
+  }
+
+  String generateUniqueId() {
+    return DateTime.now().millisecondsSinceEpoch.toString();
+  }
+
+  Future<List<MusicTrack>> scanFolderForTracks({required String folderPath}) async {
+    final dir = Directory(folderPath);
+    List<MusicTrack> tracks = [];
+
+    try {
+      final entities = await dir.list().toList();
+      for (final entity in entities) {
+        if (entity is File) {
+          final ext = p.extension(entity.path).toLowerCase().replaceFirst('.', '');
+          if (['mp3', 'flac', 'wav'].contains(ext)) {
+            tracks.add(MusicTrack(
+              id: generateUniqueId(),
+              title: p.basename(entity.path),
+              artist: 'Unknown',
+              localPath: entity.path,
+              coverUrl: '',
+            ));
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error scanning tracks in folder: $e');
+    }
+    return tracks;
   }
 
   Future<void> _initialize() async {
@@ -70,7 +102,6 @@ class PlaylistManager extends ChangeNotifier {
     final folders = _baseDir.listSync().whereType<Directory>();
 
     for (final folder in folders) {
-      // Skip reserved folders like _Trash
       if (p.basename(folder.path).startsWith('_')) continue;
 
       final exists = _playlists.any((p) => p.folderPath == folder.path);
@@ -115,8 +146,6 @@ class PlaylistManager extends ChangeNotifier {
       );
     }
   }
-
-
 
   Future<Playlist> createPlaylist(String name) async {
     final sanitized = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
@@ -224,7 +253,9 @@ class PlaylistManager extends ChangeNotifier {
     if (!await dir.exists()) return;
 
     final files = dir.listSync().whereType<File>().toList();
-    playlist.tracks = [];
+
+    // Replace the entire tracks list:
+    List<MusicTrack> newTracks = [];
 
     for (final file in files) {
       try {
@@ -240,24 +271,42 @@ class PlaylistManager extends ChangeNotifier {
 
         final track = MusicTrack(
           id: file.path,
-          title: metadata.trackName ?? file.uri.pathSegments.last,
+          title: metadata.trackName ?? p.basename(file.path),
           artist: metadata.albumArtistName ?? 'Unknown',
           localPath: file.path,
           coverUrl: coverPath ?? '',
         );
 
-        playlist.tracks.add(track);
+        newTracks.add(track);
       } catch (e) {
         debugPrint('Failed to parse metadata for ${file.path}: $e');
       }
     }
+
+    playlist.tracks = newTracks;
 
     notifyListeners();
     await _saveToPrefs();
   }
 
   void restorePlaylist(Playlist playlist) {
-    playlists.add(playlist);
-    notifyListeners();
+    if (!_playlists.any((p) => p.id == playlist.id)) {
+      _playlists.add(playlist);
+      notifyListeners();
+    }
+  }
+
+  Future<void> resyncPlaylist(String playlistName) async {
+    final index = _playlists.indexWhere((p) => p.name == playlistName);
+    if (index == -1) return;
+
+    final folder = Directory(_playlists[index].folderPath);
+    if (await folder.exists()) {
+      final newTracks = await scanFolderForTracks(folderPath: folder.path);
+      _playlists[index].tracks = newTracks;
+      await generatePlaylistCover(folder.path); // if using auto cover generation
+      notifyListeners();
+      await _saveToPrefs();
+    }
   }
 }
