@@ -8,7 +8,8 @@ import '../models/playlist.dart';
 enum RepeatMode {
   off,
   one,
-  all, group,
+  all,
+  group,
 }
 
 class PlaybackManager extends ChangeNotifier {
@@ -25,9 +26,9 @@ class PlaybackManager extends ChangeNotifier {
   // Repeat mode state
   RepeatMode _repeatMode = RepeatMode.off;
 
-  // Position and duration tracking
-  Duration? _currentPosition;
-  Duration? _currentDuration;
+  // Position and duration tracking - initialize to zero to avoid null issues in UI
+  Duration _currentPosition = Duration.zero;
+  Duration _currentDuration = Duration.zero;
 
   // Control visibility of the bottom player UI
   bool _showBottomPlayer = false;
@@ -36,23 +37,29 @@ class PlaybackManager extends ChangeNotifier {
   StreamSubscription<Duration>? _positionSubscription;
   StreamSubscription<Duration?>? _durationSubscription;
 
+  Timer? _throttleTimer;
+
   PlaybackManager(this._audioHandler) {
-    // Listen to playback position updates
     _positionSubscription = _audioHandler.positionStream.listen((pos) {
       _currentPosition = pos;
-      notifyListeners();
+      _throttleNotifyListeners();
     });
 
-    // Listen to duration updates (some players may provide null sometimes)
     _durationSubscription = _audioHandler.durationStream.listen((dur) {
-      _currentDuration = dur;
+      _currentDuration = dur ?? Duration.zero;
       notifyListeners();
     });
 
-    // Optionally, listen to playback state changes to update bottom player visibility
     _audioHandler.playbackState.listen((state) {
       _updateBottomPlayerVisibility(state.playing);
     });
+  }
+
+  void _throttleNotifyListeners() {
+    if (_throttleTimer == null || !_throttleTimer!.isActive) {
+      notifyListeners();
+      _throttleTimer = Timer(const Duration(milliseconds: 200), () {});
+    }
   }
 
   // === GETTERS ===
@@ -68,8 +75,8 @@ class PlaybackManager extends ChangeNotifier {
   String? get currentPlaylistId => _currentPlaylistId;
   int get currentIndex => _currentIndex;
 
-  Duration? get currentPosition => _currentPosition;
-  Duration? get currentDuration => _currentDuration;
+  Duration get currentPosition => _currentPosition;
+  Duration get currentDuration => _currentDuration;
 
   RepeatMode get repeatMode => _repeatMode;
 
@@ -92,19 +99,21 @@ class PlaybackManager extends ChangeNotifier {
     }
   }
 
-  /// Play the current track based on _currentIndex
   Future<void> _playCurrent() async {
     if (_currentIndex < 0 || _currentIndex >= _playlist.length) return;
 
     final track = _playlist[_currentIndex];
     if (track.localPath != null) {
+      final stopwatch = Stopwatch()..start();
       await _audioHandler.playTrack(track.localPath!);
+      stopwatch.stop();
+      debugPrint('[PlaybackManager] playTrack took: ${stopwatch.elapsedMilliseconds}ms');
       _updateBottomPlayerVisibility(true);
-      notifyListeners();
     } else {
       debugPrint('[PlaybackManager] Track path is null: ${track.id}');
     }
   }
+
 
   // === PUBLIC METHODS ===
 
@@ -121,6 +130,9 @@ class PlaybackManager extends ChangeNotifier {
       notifyListeners();
       return;
     }
+
+    // Stop any current playback to avoid codec conflicts
+    await _audioHandler.stop();
 
     _playlist = List.of(tracks);
     _isShuffled = shuffle;
@@ -148,13 +160,17 @@ class PlaybackManager extends ChangeNotifier {
   }
 
   /// Plays a specific track if it exists in the current playlist.
-  Future<void> playTrack(MusicTrack track) async {
+  /// Returns true if successful, false if track not found.
+  Future<bool> playTrack(MusicTrack track) async {
     final index = _playlist.indexWhere((t) => t.id == track.id);
     if (index != -1) {
       _currentIndex = index;
       await _playCurrent();
       notifyListeners();
+      return true;
     }
+    debugPrint('[PlaybackManager] Track not found in current playlist: ${track.id}');
+    return false;
   }
 
   Future<void> pause() async {
@@ -192,6 +208,8 @@ class PlaybackManager extends ChangeNotifier {
 
   /// Toggles shuffle on/off for the current playlist in memory.
   void toggleShuffle() {
+    if (_playlist.isEmpty) return;
+
     _isShuffled = !_isShuffled;
 
     if (_isShuffled) {
@@ -242,7 +260,7 @@ class PlaybackManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Cycle repeat mode: off -> all -> one -> off
+  /// Cycle repeat mode: off -> all -> one -> group -> off
   void cycleRepeatMode() {
     switch (_repeatMode) {
       case RepeatMode.off:
@@ -252,11 +270,11 @@ class PlaybackManager extends ChangeNotifier {
         _repeatMode = RepeatMode.one;
         break;
       case RepeatMode.one:
-        _repeatMode = RepeatMode.off;
+        _repeatMode = RepeatMode.group;
         break;
       case RepeatMode.group:
-        _repeatMode = RepeatMode.group;
-
+        _repeatMode = RepeatMode.off;
+        break;
     }
     notifyListeners();
   }
