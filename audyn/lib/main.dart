@@ -10,7 +10,8 @@ import 'features/home/search_screen.dart';
 import 'features/home/download_screen.dart';
 import 'features/player/bottom_player.dart';
 
-final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
+final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -62,9 +63,9 @@ class _BootAppState extends State<BootApp> {
     return MultiProvider(
       providers: [
         Provider<MyAudioHandler>.value(value: _audioHandler),
-        ChangeNotifierProvider.value(value: _playlistManager),
-        ChangeNotifierProvider.value(value: _playbackManager),
-        ChangeNotifierProvider.value(value: _downloadManager),
+        ChangeNotifierProvider<PlaylistManager>(create: (_) => _playlistManager),
+        ChangeNotifierProvider<PlaybackManager>(create: (_) => _playbackManager),
+        ChangeNotifierProvider<DownloadManager>(create: (_) => _downloadManager),
       ],
       child: AudynApp(audioHandler: _audioHandler),
     );
@@ -79,7 +80,7 @@ class AudynApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      navigatorKey: navigatorKey,
+      navigatorKey: rootNavigatorKey,
       title: 'Audyn',
       theme: ThemeData.dark().copyWith(
         bottomNavigationBarTheme: const BottomNavigationBarThemeData(
@@ -113,6 +114,10 @@ class _AppWithPlayerState extends State<AppWithPlayer> {
 
   void _onItemTapped(int index) {
     setState(() => _selectedIndex = index);
+    appNavigatorKey.currentState!.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => _pages[index]),
+          (route) => false,
+    );
   }
 
   @override
@@ -120,11 +125,25 @@ class _AppWithPlayerState extends State<AppWithPlayer> {
     final playbackManager = context.watch<PlaybackManager>();
 
     return Scaffold(
-      body: _pages[_selectedIndex],
+      body: Stack(
+        children: [
+          Navigator(
+            key: appNavigatorKey,
+            onGenerateRoute: (_) => MaterialPageRoute(
+              builder: (_) => _pages[_selectedIndex],
+            ),
+          ),
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: playbackManager.showBottomPlayer
+                ? const BottomPlayer()
+                : const SizedBox.shrink(),
+          ),
+        ],
+      ),
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (playbackManager.showBottomPlayer) const BottomPlayer(),
           BottomNavigationBar(
             currentIndex: _selectedIndex,
             onTap: _onItemTapped,
