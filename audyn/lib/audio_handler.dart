@@ -1,28 +1,38 @@
+import 'dart:io';
+
 import 'package:audio_service/audio_service.dart';
-import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_media_metadata/flutter_media_metadata.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:rxdart/rxdart.dart';
 
 class MyAudioHandler extends BaseAudioHandler with SeekHandler {
   final AudioPlayer _player = AudioPlayer();
 
+  @override
+  final BehaviorSubject<List<MediaItem>> queue = BehaviorSubject<List<MediaItem>>.seeded([]);
+
+  @override
+  final BehaviorSubject<MediaItem?> mediaItem = BehaviorSubject<MediaItem?>();
+
   MyAudioHandler() {
-    // Broadcast playback state changes
+    // Listen to playback events to update playback state
     _player.playbackEventStream.listen((event) {
       playbackState.add(_transformEvent(event));
     });
 
-    // Update mediaItem when current index changes
+    // Listen to currentIndex changes and update mediaItem accordingly
     _player.currentIndexStream.listen((index) {
-      final sequence = _player.sequence;
-      if (index != null && sequence != null && index < sequence.length) {
-        final tag = sequence[index].tag;
-        if (tag is MediaItem) {
-          mediaItem.add(tag);
-        }
+      final currentQueue = queue.valueOrNull;
+      if (index != null && currentQueue != null && index >= 0 && index < currentQueue.length) {
+        mediaItem.add(currentQueue[index]);
+      } else {
+        mediaItem.add(null);
       }
     });
 
-    // Listen for player state changes for error handling or idle state
+    // Handle player idle state if needed
     _player.playerStateStream.listen((state) {
       if (state.processingState == ProcessingState.idle && !state.playing) {
         playbackState.add(playbackState.value.copyWith(
@@ -31,6 +41,27 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler {
         ));
       }
     });
+  }
+
+  @override
+  Future<void> setQueue(List<MediaItem> newQueue) async {
+    queue.add(newQueue);
+
+    final audioSources = newQueue
+        .map((item) => AudioSource.uri(Uri.parse(item.id), tag: item))
+        .toList();
+
+    try {
+      await _player.setAudioSource(ConcatenatingAudioSource(children: audioSources));
+      if (newQueue.isNotEmpty) {
+        mediaItem.add(newQueue.first);
+        await _player.seek(Duration.zero, index: 0);
+      } else {
+        mediaItem.add(null);
+      }
+    } catch (e) {
+      print('Error setting audio source queue: $e');
+    }
   }
 
   PlaybackState _transformEvent(PlaybackEvent event) {
@@ -100,11 +131,22 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler {
         throw UnimplementedError('Group repeat mode is not supported');
     }
   }
-
-  // Optional streams you can expose if needed
-  Stream<Duration> get positionStream => _player.positionStream;
-  Stream<Duration?> get durationStream => _player.durationStream;
-
+  Future<Uri> _getDefaultArtUri() async {
+    final byteData = await rootBundle.load('lib/assets/default_art.jpg');
+    final file = File('${(await getTemporaryDirectory()).path}/default_art.jpg');
+    await file.writeAsBytes(byteData.buffer.asUint8List());
+    return Uri.file(file.path);
+  }
+  Future<Metadata?> extractMetadata(String filePath) async {
+    try {
+      final metadataRetriever = MetadataRetriever();
+      Metadata metadata = await MetadataRetriever.fromFile(File(filePath));
+      return metadata;
+    } catch (e) {
+      print('Error extracting metadata: $e');
+      return null;
+    }
+  }
   Future<void> playTrack(
       String uri, {
         String? title,
@@ -112,29 +154,30 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler {
         String? album,
         Uri? artUri,
       }) async {
+    // Extract metadata if title/artist/album are not provided
+    Metadata? meta;
+    if (title == null || artist == null || album == null) {
+      meta = await extractMetadata(uri);
+    }
+
+    final defaultArtUri = artUri ?? await _getDefaultArtUri();
+
     final item = MediaItem(
       id: uri,
-      title: title ?? 'Unknown Title',
-      artist: artist ?? 'Unknown Artist',
-      album: album ?? 'Unknown Album',
-      artUri: artUri ??
-          Uri.parse(
-            'https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/Black_square.jpg/120px-Black_square.jpg',
-          ),
+      title: title ?? meta?.trackName ?? 'Unknown Title',
+      artist: artist ?? meta?.albumArtistName ?? 'Unknown Artist',
+      album: album ?? meta?.albumName ?? 'Unknown Album',
+      artUri: artUri ?? (meta?.albumArt != null
+          ? Uri.dataFromBytes(meta!.albumArt!, mimeType: 'image/jpeg')
+          : defaultArtUri),
     );
 
-    try {
-      final source = AudioSource.uri(Uri.parse(uri), tag: item);
-      await _player.setAudioSource(source);
-      await setQueue([item]); // Important for skip controls to work
-      await setMediaItem(item);
-      await _player.play();
-    } catch (e) {
-      print('❌ Error in playTrack: $e');
-    }
+    await setQueue([item]);
+    await _player.play();
   }
 
-  // === Playback Commands ===
+
+  // Playback controls
   @override
   Future<void> play() => _player.play();
 
@@ -181,26 +224,17 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler {
     playbackState.add(playbackState.value.copyWith(shuffleMode: mode));
   }
 
-  @override
-  Future<void> setQueue(List<MediaItem> items) async {
-    queue.add(items);
-  }
-
-  @override
-  Future<void> setMediaItem(MediaItem item) async {
-    mediaItem.add(item);
-  }
+  // Expose streams for UI and others
+  Stream<Duration> get positionStream => _player.positionStream;
+  Stream<Duration?> get durationStream => _player.durationStream;
 }
 Future<MyAudioHandler> initAudioService() async {
-  final handler = MyAudioHandler();
-  await AudioService.init(
-    builder: () => handler,
-    config: AudioServiceConfig(
+  return await AudioService.init(
+    builder: () => MyAudioHandler(),
+    config: const AudioServiceConfig(
       androidNotificationChannelId: 'com.example.audyn.channel.audio',
-      androidNotificationChannelName: 'Audyn Playback',
+      androidNotificationChannelName: 'Audio Playback',
       androidNotificationOngoing: true,
     ),
   );
-  debugPrint("✅ AudioHandler initialized: $handler");
-  return handler;
 }
