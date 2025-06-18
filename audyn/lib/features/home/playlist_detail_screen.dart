@@ -1,13 +1,10 @@
 import 'dart:io';
-
-import 'package:audyn/features/home/playlists_overview_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:collection/collection.dart';
 import '../../core/playlist/playlist_manager.dart';
 import '../../core/models/music_track.dart';
 import '../../core/playback/playback_manager.dart';
-import '../player/Bottom_player.dart';
 
 class PlaylistDetailScreen extends StatelessWidget {
   final String playlistName;
@@ -32,14 +29,12 @@ class PlaylistDetailScreen extends StatelessWidget {
         appBar: AppBar(title: const Text("Playlist has no songs")),
         body: Center(
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center, // center vertically
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
               const Text("Wow such empty"),
               const SizedBox(height: 20),
               ElevatedButton(
-                onPressed: () async {
-                  await onRescan();
-                },
+                onPressed: () async => await onRescan(),
                 child: const Text("Rescan Music Directory"),
               ),
             ],
@@ -47,7 +42,6 @@ class PlaylistDetailScreen extends StatelessWidget {
         ),
       );
     }
-
 
     final isPlaylistPlaying = playback.isPlaying &&
         const DeepCollectionEquality().equals(
@@ -59,14 +53,13 @@ class PlaylistDetailScreen extends StatelessWidget {
       backgroundColor: Colors.black,
       body: Column(
         children: [
-          // Header with cover image
+          // Header
           FutureBuilder<String?>(
             future: File('${playlist.folderPath}/cover.jpg').exists().then(
                   (exists) => exists ? '${playlist.folderPath}/cover.jpg' : null,
             ),
             builder: (context, snapshot) {
               final coverPath = snapshot.data;
-
               return Container(
                 padding: const EdgeInsets.only(top: 40, left: 16, right: 16, bottom: 20),
                 decoration: BoxDecoration(
@@ -86,12 +79,26 @@ class PlaylistDetailScreen extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const SizedBox(height: 12),
-                    Text(
-                      playlist.name,
-                      style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                      ),
+                    Row(
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.arrow_back, color: Colors.white),
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                            child: Text(
+                              playlist.name,
+                              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 8),
                     Text(
@@ -134,9 +141,9 @@ class PlaylistDetailScreen extends StatelessWidget {
                         IconButton(
                           icon: const Icon(Icons.sync, color: Colors.white70),
                           tooltip: 'Resync Playlist',
-                            onPressed: () async {
-                              await playlistManager.resyncPlaylist(playlist.name);
-                            }
+                          onPressed: () async {
+                            await playlistManager.resyncPlaylist(playlist.name);
+                          },
                         ),
                       ],
                     ),
@@ -146,7 +153,6 @@ class PlaylistDetailScreen extends StatelessWidget {
             },
           ),
 
-          // Divider
           const Divider(height: 1, color: Colors.white24),
 
           // Track list
@@ -166,35 +172,72 @@ class PlaylistDetailScreen extends StatelessWidget {
                 final MusicTrack track = playlist.tracks[i];
                 final isPlaying = playback.currentTrack?.id == track.id && playback.isPlaying;
 
-                return ListTile(
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  leading: track.coverUrl.isNotEmpty
-                      ? ClipRRect(
-                    borderRadius: BorderRadius.circular(6),
-                    child: Image.file(
-                      File(track.coverUrl),
+                Widget buildCoverImage(String? path) {
+                  if (path == null) {
+                    return const Icon(Icons.music_note, size: 50, color: Colors.white54);
+                  }
+                  final file = File(path);
+                  if (file.existsSync()) {
+                    return Image.file(
+                      file,
                       width: 50,
                       height: 50,
                       fit: BoxFit.cover,
-                    ),
-                  )
-                      : const Icon(Icons.music_note, size: 40, color: Colors.white70),
-                  title: Text(track.title, style: const TextStyle(color: Colors.white)),
-                  subtitle: Text(track.artist, style: const TextStyle(color: Colors.white54)),
-                  trailing: IconButton(
-                    icon: Icon(
-                      isPlaying ? Icons.pause_circle : Icons.play_circle,
-                      color: Colors.white,
-                      size: 30,
-                    ),
-                    onPressed: () {
-                      if (isPlaying) {
-                        playback.pause();
-                      } else {
-                        playback.setPlaylist(playlist.tracks, shuffle: false);
-                        playback.playTrack(track);
-                      }
-                    },
+                    );
+                  } else {
+                    return const Icon(Icons.music_note, size: 50, color: Colors.white54);
+                  }
+                }
+
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  child: Row(
+                    children: [
+                      // fixed size image or fallback icon
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: buildCoverImage(track.coverUrl),
+                      ),
+                      const SizedBox(width: 12),
+
+                      // Texts wrapped in Expanded to constrain width
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              track.title,
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              track.artist,
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                              style: const TextStyle(color: Colors.white54),
+                            ),
+                          ],
+                        ),
+                      ),
+                      // Play/Pause button fixed size
+                      IconButton(
+                        icon: Icon(
+                          isPlaying ? Icons.pause_circle : Icons.play_circle,
+                          color: Colors.white,
+                          size: 30,
+                        ),
+                        onPressed: () {
+                          if (isPlaying) {
+                            playback.pause();
+                          } else {
+                            playback.setPlaylist(playlist.tracks, shuffle: false);
+                            playback.playTrack(track);
+                          }
+                        },
+                      ),
+                    ],
                   ),
                 );
               },

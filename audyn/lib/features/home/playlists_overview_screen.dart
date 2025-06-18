@@ -168,13 +168,17 @@ class _PlaylistsOverviewScreenState extends State<PlaylistsOverviewScreen> {
   Future<void> _showCreatePlaylistDialog() async {
     String newPlaylistName = '';
     final formKey = GlobalKey<FormState>();
+    final playlistManager = context.read<PlaylistManager>();
 
     await showDialog(
       context: context,
       builder: (context) {
         return AlertDialog(
           backgroundColor: Colors.grey[900],
-          title: const Text('Create New Playlist', style: TextStyle(color: Colors.white)),
+          title: const Text(
+            'Create New Playlist',
+            style: TextStyle(color: Colors.white),
+          ),
           content: Form(
             key: formKey,
             child: TextFormField(
@@ -186,7 +190,7 @@ class _PlaylistsOverviewScreenState extends State<PlaylistsOverviewScreen> {
                 enabledBorder: const UnderlineInputBorder(
                   borderSide: BorderSide(color: Colors.white54),
                 ),
-                focusedBorder: UnderlineInputBorder(
+                focusedBorder: const UnderlineInputBorder(
                   borderSide: BorderSide(color: Colors.lightBlueAccent),
                 ),
               ),
@@ -212,10 +216,11 @@ class _PlaylistsOverviewScreenState extends State<PlaylistsOverviewScreen> {
                 backgroundColor: Colors.lightBlueAccent,
               ),
               child: const Text('Create'),
-              onPressed: () {
+              onPressed: () async {
                 if (formKey.currentState?.validate() ?? false) {
                   Navigator.of(context).pop();
-                  _createPlaylist(newPlaylistName.trim());
+                  await _createPlaylist(newPlaylistName.trim());
+                  await playlistManager.resyncPlaylists();
                 }
               },
             ),
