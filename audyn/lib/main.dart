@@ -63,14 +63,18 @@ class _BootAppState extends State<BootApp> {
     return MultiProvider(
       providers: [
         Provider<MyAudioHandler>.value(value: _audioHandler),
-        ChangeNotifierProvider<PlaylistManager>(create: (_) => _playlistManager),
-        ChangeNotifierProvider<PlaybackManager>(create: (_) => _playbackManager),
-        ChangeNotifierProvider<DownloadManager>(create: (_) => _downloadManager),
+        ChangeNotifierProvider<PlaylistManager>.value(value: _playlistManager),
+        ChangeNotifierProvider<PlaybackManager>.value(value: _playbackManager),
+        ChangeNotifierProvider<DownloadManager>.value(value: _downloadManager),
       ],
-      child: AudynApp(audioHandler: _audioHandler),
+      child: Builder(
+        builder: (context) => AudynApp(audioHandler: _audioHandler),
+      ),
     );
+
   }
 }
+
 
 class AudynApp extends StatelessWidget {
   final MyAudioHandler audioHandler;
