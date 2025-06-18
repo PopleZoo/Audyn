@@ -7,7 +7,6 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
-
 import '../../main.dart';
 import '../../utils/playlist_cover_generator.dart';
 import '../models/music_track.dart';
@@ -48,21 +47,45 @@ class PlaylistManager extends ChangeNotifier {
         if (entity is File) {
           final ext = p.extension(entity.path).toLowerCase().replaceFirst('.', '');
           if (['mp3', 'flac', 'wav'].contains(ext)) {
-            tracks.add(MusicTrack(
-              id: generateUniqueId(),
-              title: p.basename(entity.path),
-              artist: 'Unknown',
-              localPath: entity.path,
-              coverUrl: '',
-            ));
+            try {
+              final metadata = await MetadataRetriever.fromFile(entity);
+              String? coverPath;
+
+              if (metadata.albumArt != null) {
+                final tempDir = await getTemporaryDirectory();
+                final coverFile = File(p.join(tempDir.path, '${entity.uri.pathSegments.last}_cover.jpg'));
+                await coverFile.writeAsBytes(metadata.albumArt!);
+                coverPath = coverFile.path;
+              }
+
+              tracks.add(MusicTrack(
+                id: entity.path,
+                title: metadata.trackName ?? p.basename(entity.path),
+                artist: metadata.albumArtistName ?? 'Unknown',
+                localPath: entity.path,
+                coverUrl: coverPath ?? '',
+              ));
+            } catch (e) {
+              debugPrint('Metadata parsing failed for ${entity.path}: $e');
+              // Fallback to minimal info if metadata fails
+              tracks.add(MusicTrack(
+                id: entity.path,
+                title: p.basename(entity.path),
+                artist: 'Unknown',
+                localPath: entity.path,
+                coverUrl: '',
+              ));
+            }
           }
         }
       }
     } catch (e) {
       debugPrint('Error scanning tracks in folder: $e');
     }
+
     return tracks;
   }
+
 
   Future<void> _initialize() async {
     await _loadBaseDir();
@@ -138,14 +161,14 @@ class PlaylistManager extends ChangeNotifier {
         await refreshPlaylist(playlist.id);
       }
 
-      ScaffoldMessenger.maybeOf(navigatorKey.currentContext!)?.showSnackBar(
+      ScaffoldMessenger.maybeOf(appNavigatorKey.currentContext!)?.showSnackBar(
         const SnackBar(content: Text('Playlists resynced successfully')),
       );
 
       notifyListeners();
     } catch (e) {
       debugPrint("Failed to resync playlists: $e");
-      ScaffoldMessenger.maybeOf(navigatorKey.currentContext!)?.showSnackBar(
+      ScaffoldMessenger.maybeOf(appNavigatorKey.currentContext!)?.showSnackBar(
         SnackBar(content: Text('Failed to resync playlists: $e')),
       );
     }

@@ -7,6 +7,7 @@ import 'package:collection/collection.dart';
 import '../../core/playlist/playlist_manager.dart';
 import '../../core/models/music_track.dart';
 import '../../core/playback/playback_manager.dart';
+import '../player/Bottom_player.dart';
 
 class PlaylistDetailScreen extends StatelessWidget {
   final String playlistName;
@@ -102,7 +103,7 @@ class PlaylistDetailScreen extends StatelessWidget {
                       children: [
                         ElevatedButton.icon(
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.greenAccent[400],
+                            backgroundColor: Colors.lightBlueAccent,
                             foregroundColor: Colors.black,
                           ),
                           icon: Icon(

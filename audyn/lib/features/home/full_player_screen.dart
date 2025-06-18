@@ -94,14 +94,6 @@ class _FullPlayerScreenState extends State<FullPlayerScreen> {
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 8),
-                      Text(
-                        track.artist,
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 18,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
                       const SizedBox(height: 32),
                       _buildProgressBar(playbackManager),
                       const SizedBox(height: 32),
