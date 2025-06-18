@@ -8,6 +8,7 @@ class MusicTrack {
   final String coverUrl; // Can be a local path or remote URL
   final String? localPath;
   final Duration duration;
+  final DateTime? dateAdded; // <-- added field
 
   const MusicTrack({
     required this.id,
@@ -17,6 +18,7 @@ class MusicTrack {
     this.coverUrl = '',
     this.localPath,
     this.duration = Duration.zero,
+    this.dateAdded, // <-- added constructor parameter
   });
 
   factory MusicTrack.fromJson(Map<String, dynamic> json) {
@@ -28,6 +30,9 @@ class MusicTrack {
       coverUrl: json['coverUrl'] ?? '',
       localPath: json['localPath'],
       duration: Duration(milliseconds: json['duration'] ?? 0),
+      dateAdded: json['dateAdded'] != null
+          ? DateTime.tryParse(json['dateAdded'])
+          : null, // <-- added parsing
     );
   }
 
@@ -39,6 +44,7 @@ class MusicTrack {
     'coverUrl': coverUrl,
     'localPath': localPath,
     'duration': duration.inMilliseconds,
+    'dateAdded': dateAdded?.toIso8601String(), // <-- added serialization
   };
 
   /// Returns a File for the cover if it's a local path

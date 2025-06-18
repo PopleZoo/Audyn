@@ -5,8 +5,9 @@ import 'package:collection/collection.dart';
 import '../../core/playlist/playlist_manager.dart';
 import '../../core/models/music_track.dart';
 import '../../core/playback/playback_manager.dart';
+import '../../widget/track_list_item.dart';
 
-class PlaylistDetailScreen extends StatelessWidget {
+class PlaylistDetailScreen extends StatefulWidget {
   final String playlistName;
   final Future<void> Function() onRescan;
 
@@ -17,12 +18,59 @@ class PlaylistDetailScreen extends StatelessWidget {
   });
 
   @override
+  State<PlaylistDetailScreen> createState() => _PlaylistDetailScreenState();
+}
+
+class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
+  static const bool isDebug = false;
+  static const int maxVisibleTracks = 300;
+
+  String _searchQuery = '';
+  String _sortBy = 'Title';
+  bool _ascending = true;
+  bool _isShuffleActive = false;
+
+  Future<String?> _getCoverPath(String folderPath) async {
+    final coverFile = File('$folderPath/cover.jpg');
+    return await coverFile.exists() ? coverFile.path : null;
+  }
+
+  Future<bool> _fileExists(String path) async {
+    return await File(path).exists();
+  }
+
+  List<MusicTrack> _applyFilters(List<MusicTrack> tracks) {
+    var filtered = tracks.where((track) {
+      return track.title.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+          track.artist.toLowerCase().contains(_searchQuery.toLowerCase());
+    }).toList();
+
+    filtered.sort((a, b) {
+      int compare;
+      switch (_sortBy) {
+        case 'Artist':
+          compare = a.artist.compareTo(b.artist);
+          break;
+        case 'Date Added':
+          final aDate = a.dateAdded ?? DateTime.fromMillisecondsSinceEpoch(0);
+          final bDate = b.dateAdded ?? DateTime.fromMillisecondsSinceEpoch(0);
+          compare = aDate.compareTo(bDate);
+          break;
+        case 'Title':
+        default:
+          compare = a.title.compareTo(b.title);
+      }
+      return _ascending ? compare : -compare;
+    });
+
+    return filtered;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final playlistManager = context.watch<PlaylistManager>();
-    final playback = context.watch<PlaybackManager>();
     final playlists = playlistManager.playlists;
-
-    final playlist = playlists.firstWhereOrNull((p) => p.name == playlistName);
+    final playlist = playlists.firstWhereOrNull((p) => p.name == widget.playlistName);
 
     if (playlist == null) {
       return Scaffold(
@@ -34,7 +82,7 @@ class PlaylistDetailScreen extends StatelessWidget {
               const Text("Wow such empty"),
               const SizedBox(height: 20),
               ElevatedButton(
-                onPressed: () async => await onRescan(),
+                onPressed: () async => await widget.onRescan(),
                 child: const Text("Rescan Music Directory"),
               ),
             ],
@@ -43,21 +91,18 @@ class PlaylistDetailScreen extends StatelessWidget {
       );
     }
 
-    final isPlaylistPlaying = playback.isPlaying &&
-        const DeepCollectionEquality().equals(
-          playback.currentTrack,
-          playlist.tracks,
-        );
+    final visibleTracks = isDebug
+        ? playlist.tracks.take(maxVisibleTracks).toList()
+        : playlist.tracks;
+
+    final displayedTracks = _applyFilters(visibleTracks);
 
     return Scaffold(
       backgroundColor: Colors.black,
       body: Column(
         children: [
-          // Header
           FutureBuilder<String?>(
-            future: File('${playlist.folderPath}/cover.jpg').exists().then(
-                  (exists) => exists ? '${playlist.folderPath}/cover.jpg' : null,
-            ),
+            future: _getCoverPath(playlist.folderPath),
             builder: (context, snapshot) {
               final coverPath = snapshot.data;
               return Container(
@@ -83,20 +128,18 @@ class PlaylistDetailScreen extends StatelessWidget {
                       children: [
                         IconButton(
                           icon: const Icon(Icons.arrow_back, color: Colors.white),
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                          },
+                          onPressed: () => Navigator.of(context).pop(),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                            child: Text(
-                              playlist.name,
-                              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                              ),
-                              overflow: TextOverflow.ellipsis,
+                          child: Text(
+                            playlist.name,
+                            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
                             ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                       ],
                     ),
@@ -106,46 +149,72 @@ class PlaylistDetailScreen extends StatelessWidget {
                       style: const TextStyle(color: Colors.white70),
                     ),
                     const SizedBox(height: 20),
-                    Row(
-                      children: [
-                        ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.lightBlueAccent,
-                            foregroundColor: Colors.black,
+                    Selector<PlaybackManager, bool>(
+                      selector: (_, pm) => pm.isPlaying &&
+                          const DeepCollectionEquality().equals(
+                            pm.currentTrack,
+                            playlist.tracks,
                           ),
-                          icon: Icon(
-                            isPlaylistPlaying ? Icons.pause : Icons.play_arrow,
-                          ),
-                          label: Text(isPlaylistPlaying ? "Pause" : "Play"),
-                          onPressed: () {
-                            if (isPlaylistPlaying) {
-                              playback.pause();
-                            } else {
-                              playback.setPlaylist(playlist.tracks, shuffle: false);
-                            }
-                          },
-                        ),
-                        const SizedBox(width: 12),
-                        OutlinedButton.icon(
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.white,
-                            side: const BorderSide(color: Colors.white24),
-                          ),
-                          icon: const Icon(Icons.shuffle),
-                          label: const Text("Shuffle"),
-                          onPressed: () {
-                            playback.setPlaylist(playlist.tracks, shuffle: true);
-                          },
-                        ),
-                        const SizedBox(width: 12),
-                        IconButton(
-                          icon: const Icon(Icons.sync, color: Colors.white70),
-                          tooltip: 'Resync Playlist',
-                          onPressed: () async {
-                            await playlistManager.resyncPlaylist(playlist.name);
-                          },
-                        ),
-                      ],
+                      builder: (context, isPlaylistPlaying, _) {
+                        final playback = context.read<PlaybackManager>();
+                        return Row(
+                          children: [
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.lightBlueAccent,
+                                foregroundColor: Colors.black,
+                              ),
+                              icon: Icon(isPlaylistPlaying ? Icons.pause : Icons.play_arrow),
+                              label: Text(isPlaylistPlaying ? "Pause" : "Play"),
+                              onPressed: () {
+                                if (isPlaylistPlaying) {
+                                  playback.pause();
+                                } else {
+                                  playback.setPlaylist(playlist.tracks, shuffle: false);
+                                }
+                              },
+                            ),
+                            const SizedBox(width: 12),
+                            Ink(
+                              decoration: BoxDecoration(
+                                color: _isShuffleActive
+                                    ? Colors.lightBlueAccent.withOpacity(0.3)
+                                    : Colors.transparent,
+                                shape: BoxShape.circle,
+                              ),
+                              child: IconButton(
+                                icon: Icon(
+                                  Icons.shuffle,
+                                  color: _isShuffleActive
+                                      ? Colors.lightBlueAccent
+                                      : Colors.white,
+                                  size: 24,
+                                ),
+                                onPressed: () async {
+                                  setState(() {
+                                    _isShuffleActive = !_isShuffleActive;
+                                  });
+                                  await playback.setPlaylist(
+                                    playlist.tracks,
+                                    shuffle: _isShuffleActive,
+                                    playlistId: playlist.name,
+                                  );
+                                },
+                                tooltip: 'Shuffle Play',
+                                splashRadius: 24,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            IconButton(
+                              icon: const Icon(Icons.sync, color: Colors.white70),
+                              tooltip: 'Resync Playlist',
+                              onPressed: () async {
+                                await playlistManager.resyncPlaylist(playlist.name);
+                              },
+                            ),
+                          ],
+                        );
+                      },
                     ),
                   ],
                 ),
@@ -155,92 +224,68 @@ class PlaylistDetailScreen extends StatelessWidget {
 
           const Divider(height: 1, color: Colors.white24),
 
-          // Track list
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Column(
+              children: [
+                TextField(
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    hintText: 'Search tracks...',
+                    hintStyle: const TextStyle(color: Colors.white54),
+                    prefixIcon: const Icon(Icons.search, color: Colors.white54),
+                    filled: true,
+                    fillColor: Colors.white10,
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  onChanged: (value) {
+                    setState(() => _searchQuery = value);
+                  },
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    DropdownButton<String>(
+                      value: _sortBy,
+                      dropdownColor: Colors.black,
+                      style: const TextStyle(color: Colors.white),
+                      items: ['Title', 'Artist', 'Date Added'].map((e) {
+                        return DropdownMenuItem(
+                          value: e,
+                          child: Text(e),
+                        );
+                      }).toList(),
+                      onChanged: (value) {
+                        if (value != null) {
+                          setState(() => _sortBy = value);
+                        }
+                      },
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        _ascending ? Icons.arrow_upward : Icons.arrow_downward,
+                        color: Colors.white,
+                      ),
+                      onPressed: () => setState(() => _ascending = !_ascending),
+                      tooltip: 'Toggle Sort Direction',
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+
           Expanded(
-            child: playlist.tracks.isEmpty
-                ? const Center(
-              child: Text(
-                "No tracks in this playlist.",
-                style: TextStyle(color: Colors.white60),
-              ),
-            )
-                : ListView.separated(
+            child: ListView.separated(
               padding: const EdgeInsets.symmetric(vertical: 8),
-              itemCount: playlist.tracks.length,
+              cacheExtent: 500,
+              itemCount: displayedTracks.length,
               separatorBuilder: (_, __) => const Divider(color: Colors.white12, indent: 80),
               itemBuilder: (context, i) {
-                final MusicTrack track = playlist.tracks[i];
-                final isPlaying = playback.currentTrack?.id == track.id && playback.isPlaying;
-
-                Widget buildCoverImage(String? path) {
-                  if (path == null) {
-                    return const Icon(Icons.music_note, size: 50, color: Colors.white54);
-                  }
-                  final file = File(path);
-                  if (file.existsSync()) {
-                    return Image.file(
-                      file,
-                      width: 50,
-                      height: 50,
-                      fit: BoxFit.cover,
-                    );
-                  } else {
-                    return const Icon(Icons.music_note, size: 50, color: Colors.white54);
-                  }
-                }
-
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  child: Row(
-                    children: [
-                      // fixed size image or fallback icon
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(6),
-                        child: buildCoverImage(track.coverUrl),
-                      ),
-                      const SizedBox(width: 12),
-
-                      // Texts wrapped in Expanded to constrain width
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              track.title,
-                              overflow: TextOverflow.ellipsis,
-                              maxLines: 1,
-                              style: const TextStyle(color: Colors.white),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              track.artist,
-                              overflow: TextOverflow.ellipsis,
-                              maxLines: 1,
-                              style: const TextStyle(color: Colors.white54),
-                            ),
-                          ],
-                        ),
-                      ),
-                      // Play/Pause button fixed size
-                      IconButton(
-                        icon: Icon(
-                          isPlaying ? Icons.pause_circle : Icons.play_circle,
-                          color: Colors.white,
-                          size: 30,
-                        ),
-                        onPressed: () {
-                          if (isPlaying) {
-                            playback.pause();
-                          } else {
-                            playback.setPlaylist(playlist.tracks, shuffle: false);
-                            playback.playTrack(track);
-                          }
-                        },
-                      ),
-                    ],
-                  ),
-                );
+                final track = displayedTracks[i];
+                return TrackListItem(track: track, fullPlaylist: playlist.tracks);
               },
+
             ),
           ),
         ],
