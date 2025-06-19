@@ -1,5 +1,5 @@
 import 'dart:io';
-
+import 'dart:convert'; // << Add this import for base64 decoding
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_media_metadata/flutter_media_metadata.dart';
@@ -147,6 +147,13 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler {
       return null;
     }
   }
+  Future<File> _saveAlbumArtToTempFile(Uint8List bytes) async {
+    final tempDir = await getTemporaryDirectory();
+    final file = File('${tempDir.path}/album_art_${DateTime.now().millisecondsSinceEpoch}.jpg');
+    await file.writeAsBytes(bytes);
+    return file;
+  }
+
   Future<void> playTrack(
       String uri, {
         String? title,
@@ -154,7 +161,6 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler {
         String? album,
         Uri? artUri,
       }) async {
-    // Extract metadata if title/artist/album are not provided
     Metadata? meta;
     if (title == null || artist == null || album == null) {
       meta = await extractMetadata(uri);
@@ -162,14 +168,22 @@ class MyAudioHandler extends BaseAudioHandler with SeekHandler {
 
     final defaultArtUri = artUri ?? await _getDefaultArtUri();
 
+    Uri finalArtUri;
+    if (artUri != null) {
+      finalArtUri = artUri;
+    } else if (meta?.albumArt != null) {
+      final artFile = await _saveAlbumArtToTempFile(meta!.albumArt!);
+      finalArtUri = Uri.file(artFile.path);
+    } else {
+      finalArtUri = defaultArtUri;
+    }
+
     final item = MediaItem(
       id: uri,
       title: title ?? meta?.trackName ?? 'Unknown Title',
       artist: artist ?? meta?.albumArtistName ?? 'Unknown Artist',
       album: album ?? meta?.albumName ?? 'Unknown Album',
-      artUri: artUri ?? (meta?.albumArt != null
-          ? Uri.dataFromBytes(meta!.albumArt!, mimeType: 'image/jpeg')
-          : defaultArtUri),
+      artUri: finalArtUri,
     );
 
     await setQueue([item]);

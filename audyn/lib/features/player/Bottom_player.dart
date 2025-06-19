@@ -1,16 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:provider/provider.dart';
-
 import '../../../audio_handler.dart';
 import '../../core/models/music_track.dart';
-import '../../core/playback/playback_manager.dart';
-import '../home/full_player_screen.dart';
-import 'package:flutter/material.dart';
-import 'package:audio_service/audio_service.dart';
-import 'package:provider/provider.dart';
-
-import '../../../audio_handler.dart';
 import '../../core/playback/playback_manager.dart';
 import '../home/full_player_screen.dart';
 
@@ -23,6 +15,7 @@ class BottomPlayer extends StatefulWidget {
 
 class _BottomPlayerState extends State<BottomPlayer> {
   bool _visible = true;
+  bool _hasCover = false;
 
   @override
   void initState() {
@@ -41,6 +34,38 @@ class _BottomPlayerState extends State<BottomPlayer> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _checkCoverFile();
+  }
+
+  @override
+  void didUpdateWidget(covariant BottomPlayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _checkCoverFile();
+  }
+
+  Future<void> _checkCoverFile() async {
+    final playback = Provider.of<PlaybackManager>(context, listen: false);
+    final track = playback.currentTrack;
+
+    if (track?.coverFile != null) {
+      final exists = await track!.coverFile!.exists();
+      if (mounted && exists != _hasCover) {
+        setState(() {
+          _hasCover = exists;
+        });
+      }
+    } else {
+      if (mounted && _hasCover) {
+        setState(() {
+          _hasCover = false;
+        });
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     if (!_visible) return const SizedBox.shrink();
 
@@ -52,182 +77,187 @@ class _BottomPlayerState extends State<BottomPlayer> {
         if (track == null) return const SizedBox.shrink();
 
         return Selector<PlaybackManager, _BottomPlayerStateModel>(
-            selector: (_, playback) => _BottomPlayerStateModel(
-              isPlaying: playback.isPlaying,
-              currentPosition: playback.currentPosition ?? Duration.zero,
-              repeatMode: playback.repeatMode,
-              shuffleEnabled: playback.isShuffleEnabled,
-            ),
-            builder: (context, state, __) {
-              final progress = track.duration.inMilliseconds > 0
-                  ? state.currentPosition.inMilliseconds / track.duration.inMilliseconds
-                  : 0.0;
+          selector: (_, playback) => _BottomPlayerStateModel(
+            isPlaying: playback.isPlaying,
+            currentPosition: playback.currentPosition ?? Duration.zero,
+            repeatMode: playback.repeatMode,
+            shuffleEnabled: playback.isShuffleEnabled,
+            canSkipPrevious: playback.canSkipPrevious(),
+            canSkipNext: playback.canSkipNext(),
+          ),
+          builder: (context, state, __) {
+            final progress = track.duration.inMilliseconds > 0
+                ? state.currentPosition.inMilliseconds / track.duration.inMilliseconds
+                : 0.0;
 
-              return Dismissible(
-                  key: const Key("bottom_player"),
+            final playback = Provider.of<PlaybackManager>(context, listen: false);
+
+            return Dismissible(
+              key: const Key("bottom_player"),
               direction: DismissDirection.down,
               onDismissed: (_) => audioHandler.stop(),
               child: Hero(
-              tag: 'full_player',
-              child: GestureDetector(
-              onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const FullPlayerScreen()),
-              ),
-              child: Container(
-              height: 90,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              color: Colors.grey[900],
-              child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-              LinearProgressIndicator(
-              value: progress,
-              backgroundColor: Colors.grey[800],
-              valueColor: const AlwaysStoppedAnimation(Colors.blueAccent),
-              minHeight: 3,
-              ),
-              const SizedBox(height: 6),
-              Row(
-              children: [
-              if (track.coverFile != null)
-              ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.file(
-              track.coverFile!,
-              width: 50,
-              height: 50,
-              fit: BoxFit.cover,
-              ),
-              )
-              else
-              const Icon(Icons.music_note, size: 50),
-              const SizedBox(width: 12),
-              Expanded(
-              child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-              Text(
-              track.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              ),
-              ),
-              Text(
-              track.artist,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-              fontSize: 12,
-              color: Colors.grey[400],
-              ),
-              ),
-              Row(
-              children: [
-              Text(
-              _formatDuration(state.currentPosition),
-              style: const TextStyle(fontSize: 10, color: Colors.grey),
-              ),
-              const SizedBox(width: 8),
-              Text(
-              _formatDuration(track.duration),
-              style: const TextStyle(fontSize: 10, color: Colors.grey),
-              ),
-              ],
-              ),
-              ],
-              ),
-              ),
-              IconButton(
-              icon: Icon(
-              state.shuffleEnabled ? Icons.shuffle_on : Icons.shuffle,
-              color: state.shuffleEnabled ? Colors.blueAccent : Colors.white,
-              ),
-              onPressed: () {
-              audioHandler.setShuffleMode(
-              state.shuffleEnabled
-              ? AudioServiceShuffleMode.none
-                  : AudioServiceShuffleMode.all,
-              );
-              },
-              ),
-              IconButton(
-              icon: const Icon(Icons.skip_previous, color: Colors.white),
-              onPressed: audioHandler.skipToPrevious,
-              ),
-              IconButton(
-              icon: Icon(
-              state.isPlaying
-              ? Icons.pause_circle_filled
-                  : Icons.play_circle_filled,
-              size: 36,
-              color: Colors.white,
-              ),
-              onPressed: () {
-              state.isPlaying ? audioHandler.pause() : audioHandler.play();
-              },
-              ),
-              IconButton(
-              icon: const Icon(Icons.skip_next, color: Colors.white),
-              onPressed: audioHandler.skipToNext,
-              ),
-              IconButton(
-              icon: Icon(
-              state.repeatMode == RepeatMode.all
-              ? Icons.repeat_on
-                  : state.repeatMode == RepeatMode.one
-              ? Icons.repeat_one_on
-                  : Icons.repeat,
-              color: state.repeatMode == RepeatMode.off
-              ? Colors.white
-                  : Colors.blueAccent,
-              ),
-              onPressed: () {
-              RepeatMode nextMode;
-              switch (state.repeatMode) {
-              case RepeatMode.off:
-              nextMode = RepeatMode.all;
-              break;
-              case RepeatMode.all:
-              nextMode = RepeatMode.one;
-              break;
-              case RepeatMode.one:
-              nextMode = RepeatMode.off;
-              break;
-              case RepeatMode.group:
-              throw UnimplementedError('Group repeat mode not supported.');
-              }
+                tag: 'full_player',
+                child: GestureDetector(
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const FullPlayerScreen()),
+                  ),
+                  child: Container(
+                    height: 90,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    color: Colors.grey[900],
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        LinearProgressIndicator(
+                          value: progress,
+                          backgroundColor: Colors.grey[800],
+                          valueColor: const AlwaysStoppedAnimation(Colors.blueAccent),
+                          minHeight: 3,
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            if (_hasCover)
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.file(
+                                  track.coverFile!,
+                                  width: 50,
+                                  height: 50,
+                                  fit: BoxFit.cover,
+                                ),
+                              )
+                            else
+                              const Icon(Icons.music_note, size: 50),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    track.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  Text(
+                                    track.artist,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey[400],
+                                    ),
+                                  ),
+                                  Row(
+                                    children: [
+                                      Text(
+                                        _formatDuration(state.currentPosition),
+                                        style: const TextStyle(fontSize: 10, color: Colors.grey),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        _formatDuration(track.duration),
+                                        style: const TextStyle(fontSize: 10, color: Colors.grey),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                            IconButton(
+                              icon: Icon(
+                                Icons.shuffle,
+                                color: state.shuffleEnabled ? Colors.blueAccent : Colors.white,
+                              ),
+                              onPressed: () {
+                                audioHandler.setShuffleMode(
+                                  state.shuffleEnabled
+                                      ? AudioServiceShuffleMode.none
+                                      : AudioServiceShuffleMode.all,
+                                );
+                              },
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.skip_previous, color: Colors.white),
+                              onPressed: state.canSkipPrevious ? () => playback.previous() : null,
+                            ),
+                            IconButton(
+                              icon: Icon(
+                                state.isPlaying
+                                    ? Icons.pause_circle_filled
+                                    : Icons.play_circle_filled,
+                                size: 36,
+                                color: Colors.white,
+                              ),
+                              onPressed: () {
+                                state.isPlaying ? audioHandler.pause() : audioHandler.play();
+                              },
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.skip_next, color: Colors.white),
+                              onPressed: state.canSkipNext ? () => playback.next() : null,
+                            ),
+                            IconButton(
+                              icon: Icon(
+                                state.repeatMode == RepeatMode.all
+                                    ? Icons.repeat
+                                    : state.repeatMode == RepeatMode.one
+                                    ? Icons.repeat_one
+                                    : Icons.repeat,
+                                color: state.repeatMode == RepeatMode.off
+                                    ? Colors.white
+                                    : Colors.lightBlueAccent,
+                              ),
+                              onPressed: () {
+                                RepeatMode nextMode;
+                                switch (state.repeatMode) {
+                                  case RepeatMode.off:
+                                    nextMode = RepeatMode.all;
+                                    break;
+                                  case RepeatMode.all:
+                                    nextMode = RepeatMode.one;
+                                    break;
+                                  case RepeatMode.one:
+                                    nextMode = RepeatMode.off;
+                                    break;
+                                  case RepeatMode.group:
+                                    throw UnimplementedError('Group repeat mode not supported.');
+                                }
 
-              AudioServiceRepeatMode serviceMode;
-              switch (nextMode) {
-              case RepeatMode.off:
-              serviceMode = AudioServiceRepeatMode.none;
-              break;
-              case RepeatMode.all:
-              serviceMode = AudioServiceRepeatMode.all;
-              break;
-              case RepeatMode.one:
-              serviceMode = AudioServiceRepeatMode.one;
-              break;
-              case RepeatMode.group:
-              throw UnimplementedError();
-              }
+                                AudioServiceRepeatMode serviceMode;
+                                switch (nextMode) {
+                                  case RepeatMode.off:
+                                    serviceMode = AudioServiceRepeatMode.none;
+                                    break;
+                                  case RepeatMode.all:
+                                    serviceMode = AudioServiceRepeatMode.all;
+                                    break;
+                                  case RepeatMode.one:
+                                    serviceMode = AudioServiceRepeatMode.one;
+                                    break;
+                                  case RepeatMode.group:
+                                    throw UnimplementedError();
+                                }
 
-              audioHandler.setRepeatMode(serviceMode);
-              },
+                                audioHandler.setRepeatMode(serviceMode);
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
-              ],
-              ),
-              ],
-              ),
-              ),
-              ),
-              ),
-              );
-            });
+            );
+          },
+        );
       },
     );
   }
@@ -245,12 +275,16 @@ class _BottomPlayerStateModel {
   final Duration currentPosition;
   final RepeatMode repeatMode;
   final bool shuffleEnabled;
+  final bool canSkipPrevious;
+  final bool canSkipNext;
 
   _BottomPlayerStateModel({
     required this.isPlaying,
     required this.currentPosition,
     required this.repeatMode,
     required this.shuffleEnabled,
+    required this.canSkipPrevious,
+    required this.canSkipNext,
   });
 
   @override
@@ -261,7 +295,9 @@ class _BottomPlayerStateModel {
               isPlaying == other.isPlaying &&
               currentPosition == other.currentPosition &&
               repeatMode == other.repeatMode &&
-              shuffleEnabled == other.shuffleEnabled;
+              shuffleEnabled == other.shuffleEnabled &&
+              canSkipPrevious == other.canSkipPrevious &&
+              canSkipNext == other.canSkipNext;
 
   @override
   int get hashCode => Object.hash(
@@ -269,5 +305,7 @@ class _BottomPlayerStateModel {
     currentPosition,
     repeatMode,
     shuffleEnabled,
+    canSkipPrevious,
+    canSkipNext,
   );
 }

@@ -14,90 +14,62 @@ class TrackListItem extends StatelessWidget {
     required this.fullPlaylist,
   });
 
-  Future<bool> _fileExists(String path) async {
-    return await File(path).exists();
-  }
-
   @override
   Widget build(BuildContext context) {
-    final playback = context.watch<PlaybackManager>();
-    final isCurrent = playback.currentTrack?.id == track.id;
-    final isPlaying = playback.isPlaying;
-    final isCurrentlyPlaying = isCurrent && isPlaying;
+    final playback = context.read<PlaybackManager>();
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: Row(
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: SizedBox(
-              width: 50,
-              height: 50,
-              child: track.coverUrl == null
-                  ? const Icon(Icons.music_note, color: Colors.white54)
-                  : FutureBuilder<bool>(
-                future: _fileExists(track.coverUrl!),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(
-                      child: CircularProgressIndicator(
-                        strokeWidth: 1,
-                        valueColor: AlwaysStoppedAnimation(Colors.white30),
-                      ),
-                    );
-                  }
-                  if (snapshot.data == true) {
-                    return Image.file(
-                      File(track.coverUrl!),
-                      width: 50,
-                      height: 50,
-                      fit: BoxFit.cover,
-                    );
-                  } else {
-                    return const Icon(Icons.music_note, color: Colors.white54);
-                  }
-                },
-              ),
-            ),
+    return ListTile(
+      key: ValueKey(track.id),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+      leading: ClipRRect(
+        borderRadius: BorderRadius.circular(6),
+        child: SizedBox(
+          width: 50,
+          height: 50,
+          child: track.coverUrl == null
+              ? const Icon(Icons.music_note, color: Colors.white54)
+              : Image.file(
+            File(track.coverUrl!),
+            width: 50,
+            height: 50,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) =>
+            const Icon(Icons.music_note, color: Colors.white54),
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  track.title,
-                  overflow: TextOverflow.ellipsis,
-                  maxLines: 1,
-                  style: const TextStyle(color: Colors.white),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  track.artist,
-                  overflow: TextOverflow.ellipsis,
-                  maxLines: 1,
-                  style: const TextStyle(color: Colors.white54),
-                ),
-              ],
-            ),
-          ),
-          IconButton(
+        ),
+      ),
+      title: Text(
+        track.title,
+        style: const TextStyle(color: Colors.white),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(
+        track.artist,
+        style: const TextStyle(color: Colors.white54),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+
+      /// Only rebuild trailing when currentTrack or playing state changes
+      trailing: Selector<PlaybackManager, bool>(
+        selector: (_, pm) => pm.currentTrack?.id == track.id && pm.isPlaying,
+        builder: (_, isPlaying, __) {
+          return IconButton(
             icon: Icon(
-              isCurrentlyPlaying ? Icons.pause_circle : Icons.play_circle,
+              isPlaying ? Icons.pause_circle : Icons.play_circle,
               color: Colors.white,
               size: 30,
             ),
-            onPressed: () {
-              if (isCurrentlyPlaying) {
-                playback.pause();
+            onPressed: () async {
+              if (isPlaying) {
+                await playback.pause();
               } else {
-                playback.setPlaylist(fullPlaylist, shuffle: false);
-                playback.playTrack(track);
+                await playback.playTrack(track);
               }
             },
-          ),
-        ],
+          );
+        },
       ),
     );
   }
