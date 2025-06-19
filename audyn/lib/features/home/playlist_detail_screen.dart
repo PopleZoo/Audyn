@@ -24,6 +24,7 @@ class PlaylistDetailScreen extends StatefulWidget {
 class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   static const bool isDebug = false;
   static const int maxVisibleTracks = 300;
+  late PlaybackManager _playback;
 
   String _searchQuery = '';
   String _sortBy = 'Title';
@@ -68,31 +69,30 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
     return filtered;
   }
-
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
 
-    // Listen to PlaybackManager to sync shuffle & repeat states.
-    final playback = context.read<PlaybackManager>();
-    _isShuffleActive = playback.isShuffleEnabled;
-    _repeatMode = playback.repeatMode;
+    _playback = context.read<PlaybackManager>(); // cache once here
 
-    playback.addListener(_playbackListener);
+    // Listen to PlaybackManager to sync shuffle & repeat states.
+    _isShuffleActive = _playback.isShuffleEnabled;
+    _repeatMode = _playback.repeatMode;
+
+    _playback.addListener(_playbackListener);
   }
 
   @override
   void dispose() {
-    context.read<PlaybackManager>().removeListener(_playbackListener);
+    _playback.removeListener(_playbackListener); // use cached instance
     super.dispose();
   }
 
   void _playbackListener() {
-    final playback = context.read<PlaybackManager>();
     if (mounted) {
       setState(() {
-        _isShuffleActive = playback.isShuffleEnabled;
-        _repeatMode = playback.repeatMode;
+        _isShuffleActive = _playback.isShuffleEnabled; // cached instance
+        _repeatMode = _playback.repeatMode;           // cached instance
       });
     }
   }
@@ -210,64 +210,45 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                               },
                             ),
                             const SizedBox(width: 12),
-                            // Shuffle toggle button
+
+                            // Shuffle button
                             Ink(
                               decoration: BoxDecoration(
-                                color: _isShuffleActive
-                                    ? Colors.lightBlueAccent.withOpacity(0.3)
-                                    : Colors.transparent,
+                                color: _isShuffleActive ? Colors.lightBlueAccent.withOpacity(0.3) : Colors.transparent,
                                 shape: BoxShape.circle,
                               ),
                               child: IconButton(
-                                icon: Icon(
-                                  Icons.shuffle,
-                                  color: _isShuffleActive
-                                      ? Colors.lightBlueAccent
-                                      : Colors.white,
-                                  size: 24,
-                                ),
+                                icon: Icon(Icons.shuffle, color: _isShuffleActive ? Colors.lightBlueAccent : Colors.white, size: 24),
                                 onPressed: () async {
                                   final newShuffleState = !_isShuffleActive;
-
                                   if (isBottomPlayerVisible) {
-                                    // Just toggle shuffle mode in PlaybackManager
                                     playback.setShuffleEnabled(newShuffleState);
                                   } else {
-                                    // Start playing playlist with shuffle on/off
                                     await playback.setPlaylist(
                                       playlist.tracks,
                                       shuffle: newShuffleState,
                                       playlistId: playlist.name,
                                     );
                                   }
-
-                                  setState(() {
-                                    _isShuffleActive = newShuffleState;
-                                  });
+                                  setState(() => _isShuffleActive = newShuffleState);
                                 },
                                 tooltip: 'Shuffle Play',
                                 splashRadius: 24,
                               ),
                             ),
                             const SizedBox(width: 12),
-                            // Repeat toggle button
+
+                            // Repeat button
                             Ink(
                               decoration: BoxDecoration(
-                                color: _repeatMode != RepeatMode.off
-                                    ? Colors.lightBlueAccent.withOpacity(0.3)
-                                    : Colors.transparent,
+                                color: _repeatMode != RepeatMode.off ? Colors.lightBlueAccent.withOpacity(0.3) : Colors.transparent,
                                 shape: BoxShape.circle,
                               ),
                               child: IconButton(
                                 icon: Icon(
-                                  _repeatMode == RepeatMode.all
-                                      ? Icons.repeat
-                                      : _repeatMode == RepeatMode.one
-                                      ? Icons.repeat_one
-                                      : Icons.repeat,
-                                  color: _repeatMode != RepeatMode.off
-                                      ? Colors.lightBlueAccent
-                                      : Colors.white,
+                                  _repeatMode == RepeatMode.all ? Icons.repeat :
+                                  _repeatMode == RepeatMode.one ? Icons.repeat_one : Icons.repeat,
+                                  color: _repeatMode != RepeatMode.off ? Colors.lightBlueAccent : Colors.white,
                                   size: 24,
                                 ),
                                 onPressed: () {
@@ -285,11 +266,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                                     case RepeatMode.group:
                                       throw UnimplementedError('Group repeat mode not supported.');
                                   }
-
                                   if (isBottomPlayerVisible) {
                                     playback.setRepeatMode(nextMode);
                                   } else {
-                                    // If bottom player hidden, start playing with new repeat mode
                                     playback.setRepeatMode(nextMode);
                                     playback.setPlaylist(
                                       playlist.tracks,
@@ -297,21 +276,54 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                                       playlistId: playlist.name,
                                     );
                                   }
-
-                                  setState(() {
-                                    _repeatMode = nextMode;
-                                  });
+                                  setState(() => _repeatMode = nextMode);
                                 },
                                 tooltip: 'Repeat Mode',
                                 splashRadius: 24,
                               ),
                             ),
                             const SizedBox(width: 12),
+
+                            // Resync button
                             IconButton(
                               icon: const Icon(Icons.sync, color: Colors.white70),
                               tooltip: 'Resync Playlist',
                               onPressed: () async {
                                 await playlistManager.resyncPlaylist(playlist.name);
+                              },
+                            ),
+
+                            const SizedBox(width: 12),
+
+                            // DELETE button
+                            IconButton(
+                              icon: const Icon(Icons.delete_forever, color: Colors.redAccent),
+                              tooltip: 'Delete Playlist',
+                              onPressed: () async {
+                                final confirm = await showDialog<bool>(
+                                  context: context,
+                                  builder: (context) => AlertDialog(
+                                    title: const Text('Delete Playlist'),
+                                    content: Text('Are you sure you want to delete the playlist "${playlist.name}"? This action cannot be undone.'),
+                                    actions: [
+                                      TextButton(
+                                        child: const Text('Cancel'),
+                                        onPressed: () => Navigator.of(context).pop(false),
+                                      ),
+                                      TextButton(
+                                        child: const Text('Delete', style: TextStyle(color: Colors.red)),
+                                        onPressed: () => Navigator.of(context).pop(true),
+                                      ),
+                                    ],
+                                  ),
+                                );
+
+                                if (confirm == true) {
+                                  await playlistManager.removePlaylist(playlist.id);
+                                  if (mounted) {
+                                    Navigator.of(context).pop();  // Go back after delete
+                                  }
+                                }
                               },
                             ),
                           ],
