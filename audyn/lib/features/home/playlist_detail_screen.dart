@@ -28,7 +28,10 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   String _searchQuery = '';
   String _sortBy = 'Title';
   bool _ascending = true;
+
+  // Track shuffle & repeat state synced with PlaybackManager:
   bool _isShuffleActive = false;
+  RepeatMode _repeatMode = RepeatMode.off;
 
   Future<String?> _getCoverPath(String folderPath) async {
     final coverFile = File('$folderPath/cover.jpg');
@@ -67,6 +70,34 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+
+    // Listen to PlaybackManager to sync shuffle & repeat states.
+    final playback = context.read<PlaybackManager>();
+    _isShuffleActive = playback.isShuffleEnabled;
+    _repeatMode = playback.repeatMode;
+
+    playback.addListener(_playbackListener);
+  }
+
+  @override
+  void dispose() {
+    context.read<PlaybackManager>().removeListener(_playbackListener);
+    super.dispose();
+  }
+
+  void _playbackListener() {
+    final playback = context.read<PlaybackManager>();
+    if (mounted) {
+      setState(() {
+        _isShuffleActive = playback.isShuffleEnabled;
+        _repeatMode = playback.repeatMode;
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final playlistManager = context.watch<PlaylistManager>();
     final playlists = playlistManager.playlists;
@@ -96,6 +127,11 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         : playlist.tracks;
 
     final displayedTracks = _applyFilters(visibleTracks);
+
+    final playback = context.read<PlaybackManager>();
+
+    // Assume PlaybackManager has a bool to detect bottom player visibility
+    final isBottomPlayerVisible = playback.showBottomPlayer;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -156,7 +192,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                             playlist.tracks,
                           ),
                       builder: (context, isPlaylistPlaying, _) {
-                        final playback = context.read<PlaybackManager>();
                         return Row(
                           children: [
                             ElevatedButton.icon(
@@ -175,6 +210,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                               },
                             ),
                             const SizedBox(width: 12),
+                            // Shuffle toggle button
                             Ink(
                               decoration: BoxDecoration(
                                 color: _isShuffleActive
@@ -191,16 +227,82 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                                   size: 24,
                                 ),
                                 onPressed: () async {
+                                  final newShuffleState = !_isShuffleActive;
+
+                                  if (isBottomPlayerVisible) {
+                                    // Just toggle shuffle mode in PlaybackManager
+                                    playback.setShuffleEnabled(newShuffleState);
+                                  } else {
+                                    // Start playing playlist with shuffle on/off
+                                    await playback.setPlaylist(
+                                      playlist.tracks,
+                                      shuffle: newShuffleState,
+                                      playlistId: playlist.name,
+                                    );
+                                  }
+
                                   setState(() {
-                                    _isShuffleActive = !_isShuffleActive;
+                                    _isShuffleActive = newShuffleState;
                                   });
-                                  await playback.setPlaylist(
-                                    playlist.tracks,
-                                    shuffle: _isShuffleActive,
-                                    playlistId: playlist.name,
-                                  );
                                 },
                                 tooltip: 'Shuffle Play',
+                                splashRadius: 24,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            // Repeat toggle button
+                            Ink(
+                              decoration: BoxDecoration(
+                                color: _repeatMode != RepeatMode.off
+                                    ? Colors.lightBlueAccent.withOpacity(0.3)
+                                    : Colors.transparent,
+                                shape: BoxShape.circle,
+                              ),
+                              child: IconButton(
+                                icon: Icon(
+                                  _repeatMode == RepeatMode.all
+                                      ? Icons.repeat
+                                      : _repeatMode == RepeatMode.one
+                                      ? Icons.repeat_one
+                                      : Icons.repeat,
+                                  color: _repeatMode != RepeatMode.off
+                                      ? Colors.lightBlueAccent
+                                      : Colors.white,
+                                  size: 24,
+                                ),
+                                onPressed: () {
+                                  RepeatMode nextMode;
+                                  switch (_repeatMode) {
+                                    case RepeatMode.off:
+                                      nextMode = RepeatMode.all;
+                                      break;
+                                    case RepeatMode.all:
+                                      nextMode = RepeatMode.one;
+                                      break;
+                                    case RepeatMode.one:
+                                      nextMode = RepeatMode.off;
+                                      break;
+                                    case RepeatMode.group:
+                                      throw UnimplementedError('Group repeat mode not supported.');
+                                  }
+
+                                  if (isBottomPlayerVisible) {
+                                    playback.setRepeatMode(nextMode);
+                                  } else {
+                                    // If bottom player hidden, start playing with new repeat mode
+                                    playback.setRepeatMode(nextMode);
+                                    playback.setPlaylist(
+                                      playlist.tracks,
+                                      shuffle: _isShuffleActive,
+                                      playlistId: playlist.name,
+                                    );
+                                  }
+
+                                  setState(() {
+                                    _repeatMode = nextMode;
+                                  });
+                                },
+                                tooltip: 'Repeat Mode',
                                 splashRadius: 24,
                               ),
                             ),
@@ -285,7 +387,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 final track = displayedTracks[i];
                 return TrackListItem(track: track, fullPlaylist: playlist.tracks);
               },
-
             ),
           ),
         ],

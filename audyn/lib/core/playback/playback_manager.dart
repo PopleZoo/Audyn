@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import '../../audio_handler.dart';
@@ -23,21 +24,19 @@ class PlaybackManager extends ChangeNotifier {
   final Map<String, bool> _playlistShuffleStates = {};
   String? _currentPlaylistId;
 
-  // Repeat mode state
   RepeatMode _repeatMode = RepeatMode.off;
 
-  // Position and duration tracking - initialize to zero to avoid null issues in UI
   Duration _currentPosition = Duration.zero;
   Duration _currentDuration = Duration.zero;
 
-  // Control visibility of the bottom player UI
   bool _showBottomPlayer = false;
 
-  // Stream subscriptions for cleanup
   StreamSubscription<Duration>? _positionSubscription;
   StreamSubscription<Duration?>? _durationSubscription;
-
   Timer? _throttleTimer;
+
+  File? _currentCoverFile;
+  File? get currentCover => _currentCoverFile;
 
   PlaybackManager(this._audioHandler) {
     _positionSubscription = _audioHandler.positionStream.listen((pos) {
@@ -58,11 +57,9 @@ class PlaybackManager extends ChangeNotifier {
   void _throttleNotifyListeners() {
     if (_throttleTimer == null || !_throttleTimer!.isActive) {
       notifyListeners();
-      _throttleTimer = Timer(const Duration(milliseconds: 200), () {});
+      _throttleTimer = Timer(const Duration(milliseconds: 20), () {});
     }
   }
-
-  // === GETTERS ===
 
   bool get isPlaying => _audioHandler.playbackState.value.playing;
 
@@ -79,18 +76,11 @@ class PlaybackManager extends ChangeNotifier {
   Duration get currentDuration => _currentDuration;
 
   RepeatMode get repeatMode => _repeatMode;
-
   bool get showBottomPlayer => _showBottomPlayer;
 
-  /// Expose playback state stream for UI listening if needed
   Stream playBackStateStream() => _audioHandler.playbackState;
-
-  /// Expose current playback position stream
   Stream<Duration> get positionStream => _audioHandler.positionStream;
 
-  // === PRIVATE METHODS ===
-
-  /// Update bottom player visibility based on playing status or track availability
   void _updateBottomPlayerVisibility(bool isPlaying) {
     final shouldShow = isPlaying || currentTrack != null;
     if (_showBottomPlayer != shouldShow) {
@@ -99,26 +89,40 @@ class PlaybackManager extends ChangeNotifier {
     }
   }
 
-  Future<void> _playCurrent() async {
-    if (_currentIndex < 0 || _currentIndex >= _playlist.length) return;
+  Future<File?> _loadCoverFile(MusicTrack track) async {
+    final path = track.coverUrl;
+    if (path == null) return null;
+    final file = File(path);
+    return await file.exists() ? file : null;
+  }
+
+  Future<void> playIndex(int index) async {
+    if (index < 0 || index >= _playlist.length) {
+      debugPrint('[PlaybackManager] Invalid play index $index');
+      return;
+    }
+
+    debugPrint('[PlaybackManager] Playing index $index');
+
+    _currentIndex = index;
 
     final track = _playlist[_currentIndex];
+
+    _currentCoverFile = await _loadCoverFile(track);
+
+    _updateBottomPlayerVisibility(true);
+
     if (track.localPath != null) {
-      final stopwatch = Stopwatch()..start();
       await _audioHandler.playTrack(track.localPath!);
-      stopwatch.stop();
-      debugPrint('[PlaybackManager] playTrack took: ${stopwatch.elapsedMilliseconds}ms');
-      _updateBottomPlayerVisibility(true);
     } else {
       debugPrint('[PlaybackManager] Track path is null: ${track.id}');
     }
+
+    notifyListeners();
   }
 
 
-  // === PUBLIC METHODS ===
 
-  /// Sets the current playlist and optionally shuffles it.
-  /// If the same playlist is already loaded, resumes playing.
   Future<void> setPlaylist(
       List<MusicTrack> tracks, {
         bool shuffle = false,
@@ -131,13 +135,11 @@ class PlaybackManager extends ChangeNotifier {
       return;
     }
 
-    // Stop any current playback to avoid codec conflicts
     await _audioHandler.stop();
 
     _playlist = List.of(tracks);
     _isShuffled = shuffle;
     _currentPlaylistId = playlistId;
-    _currentIndex = 0;
 
     if (playlistId != null) {
       _playlistShuffleStates[playlistId] = shuffle;
@@ -155,23 +157,38 @@ class PlaybackManager extends ChangeNotifier {
       _originalOrder = null;
     }
 
-    await _playCurrent();
+    _currentIndex = 0;
+    _currentCoverFile = await _loadCoverFile(_playlist[_currentIndex]);
     notifyListeners();
+
+    await playIndex(_currentIndex);
   }
 
-  /// Plays a specific track if it exists in the current playlist.
-  /// Returns true if successful, false if track not found.
   Future<bool> playTrack(MusicTrack track) async {
-    final index = _playlist.indexWhere((t) => t.id == track.id);
-    if (index != -1) {
-      _currentIndex = index;
-      await _playCurrent();
-      notifyListeners();
-      return true;
+    // Make sure playlist is not empty and contains the track
+    if (_playlist.isEmpty) {
+      debugPrint('[PlaybackManager] Playlist is empty. Cannot play track.');
+      return false;
     }
-    debugPrint('[PlaybackManager] Track not found in current playlist: ${track.id}');
-    return false;
+
+    final index = _playlist.indexWhere((t) => t.id == track.id);
+    if (index == -1) {
+      debugPrint('[PlaybackManager] Track not found in current playlist: ${track.id}');
+      return false;
+    }
+
+    // Update current index BEFORE playing
+    _currentIndex = index;
+
+    // Optional: preload cover, update UI
+    _currentCoverFile = await _loadCoverFile(track);
+    notifyListeners();
+
+    await playIndex(_currentIndex);
+    return true;
   }
+
+
 
   Future<void> pause() async {
     await _audioHandler.pause();
@@ -191,22 +208,76 @@ class PlaybackManager extends ChangeNotifier {
   }
 
   Future<void> next() async {
-    if (_currentIndex < _playlist.length - 1) {
-      _currentIndex++;
-      await _playCurrent();
-      notifyListeners();
+    if (_playlist.isEmpty) return;
+
+    switch (repeatMode) {
+      case RepeatMode.one:
+      // Replay current track
+        await playIndex(_currentIndex);
+        break;
+
+      case RepeatMode.all:
+      // Move to next or wrap to start
+        _currentIndex = (_currentIndex + 1) % _playlist.length;
+        _currentCoverFile = await _loadCoverFile(_playlist[_currentIndex]);
+        await playIndex(_currentIndex);
+        break;
+
+      case RepeatMode.off:
+      // Move next if possible, else stop playback or do nothing
+        if (_currentIndex < _playlist.length - 1) {
+          _currentIndex++;
+          _currentCoverFile = await _loadCoverFile(_playlist[_currentIndex]);
+          await playIndex(_currentIndex);
+        } else {
+          // Optionally: stop playback here if at end
+          await stop();
+        }
+        break;
+
+      case RepeatMode.group:
+        throw UnimplementedError('Group repeat mode not supported.');
     }
+
+    notifyListeners();
   }
 
   Future<void> previous() async {
-    if (_currentIndex > 0) {
-      _currentIndex--;
-      await _playCurrent();
-      notifyListeners();
+    if (_playlist.isEmpty) return;
+
+    switch (repeatMode) {
+      case RepeatMode.one:
+      // Replay current track
+        await playIndex(_currentIndex);
+        break;
+
+      case RepeatMode.all:
+      // Move to previous or wrap to end
+        _currentIndex = (_currentIndex - 1 + _playlist.length) % _playlist.length;
+        _currentCoverFile = await _loadCoverFile(_playlist[_currentIndex]);
+        await playIndex(_currentIndex);
+        break;
+
+      case RepeatMode.off:
+      // Move previous if possible
+        if (_currentIndex > 0) {
+          _currentIndex--;
+          _currentCoverFile = await _loadCoverFile(_playlist[_currentIndex]);
+          await playIndex(_currentIndex);
+        } else {
+          // Optionally: restart current or do nothing
+          await playIndex(_currentIndex);
+        }
+        break;
+
+      case RepeatMode.group:
+        throw UnimplementedError('Group repeat mode not supported.');
     }
+
+    notifyListeners();
   }
 
-  /// Toggles shuffle on/off for the current playlist in memory.
+
   void toggleShuffle() {
     if (_playlist.isEmpty) return;
 
@@ -227,7 +298,6 @@ class PlaybackManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Toggles shuffle state flag for a specific playlist (does not reorder tracks).
   void toggleShuffleForPlaylist(Playlist playlist) {
     final current = _playlistShuffleStates[playlist.id] ?? false;
     _playlistShuffleStates[playlist.id] = !current;
@@ -243,7 +313,8 @@ class PlaybackManager extends ChangeNotifier {
       _audioHandler.playbackState.value.playing &&
           _currentPlaylistId == playlist.id;
 
-  bool isCurrentPlaylist(Playlist playlist) => _currentPlaylistId == playlist.id;
+  bool isCurrentPlaylist(Playlist playlist) =>
+      _currentPlaylistId == playlist.id;
 
   bool isPlaylistShuffled(Playlist playlist) =>
       _playlistShuffleStates[playlist.id] ?? false;
@@ -260,7 +331,6 @@ class PlaybackManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Cycle repeat mode: off -> all -> one -> group -> off
   void cycleRepeatMode() {
     switch (_repeatMode) {
       case RepeatMode.off:
@@ -279,11 +349,40 @@ class PlaybackManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Dispose stream subscriptions properly to avoid leaks
+  /// ✅ New Method to set playlist and play a specific track
+  Future<void> setPlaylistAndPlayTrack(
+      List<MusicTrack> tracks,
+      MusicTrack track, {
+        bool shuffle = false,
+        String? playlistId,
+      }) async {
+    await setPlaylist(tracks, shuffle: shuffle, playlistId: playlistId);
+    await playTrack(track);
+  }
+
   @override
   void dispose() {
     _positionSubscription?.cancel();
     _durationSubscription?.cancel();
     super.dispose();
   }
+
+  void setRepeatMode(RepeatMode nextMode) {
+    _repeatMode = nextMode;
+    notifyListeners();
+  }
+
+  void setShuffleEnabled(bool newShuffleState) {
+    _isShuffled = newShuffleState;
+    notifyListeners();
+  }
+
+  bool canSkipPrevious() {
+    return _playlist.isNotEmpty && _currentIndex > 0;
+  }
+
+  bool canSkipNext() {
+    return _playlist.isNotEmpty && _currentIndex < _playlist.length - 1;
+  }
+
 }
