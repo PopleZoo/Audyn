@@ -27,13 +27,13 @@ Future<void> main() async {
   // Initialize dependency injection
   init();
 
-  // Initialize workmanager before anything else
+  // Initialize workmanager
   Workmanager().initialize(
     callbackDispatcher,
-    isInDebugMode: false, // set true if you want debug logs
+    isInDebugMode: false,
   );
 
-  // Register periodic background task (you may also move this after user consent)
+  // Register periodic background task to seed songs every 12 hours
   Workmanager().registerPeriodicTask(
     "periodicMusicSeeding",
     "seedMissingSongs",
@@ -46,27 +46,21 @@ Future<void> main() async {
     ),
   );
 
-  final statuses = await [
-    Permission.mediaLibrary,
-    Permission.location,
-  ].request();
+  // Request media library permission (necessary for scanning music)
+  final status = await Permission.mediaLibrary.request();
 
-  if (statuses[Permission.mediaLibrary] != PermissionStatus.granted) {
-    debugPrint("Media permission not granted.");
+  if (status != PermissionStatus.granted) {
+    debugPrint("Media library permission not granted.");
   }
 
-  if (statuses[Permission.location] != PermissionStatus.granted) {
-    debugPrint("Location permission not granted — local swarm discovery may fail.");
-  }
-
-  // Initialize hive
+  // Initialize Hive local database
   await Hive.initFlutter();
   await Hive.openBox(HiveBox.boxName);
 
-  // Initialize audio service
+  // Initialize audio service (music player)
   await sl<MusicPlayer>().init();
 
-  // Run app with providers
+  // Run the main app with BlocProviders
   runApp(
     MultiBlocProvider(
       providers: [
@@ -86,32 +80,29 @@ Future<void> main() async {
   );
 }
 
-// Background task callback dispatcher, runs in background isolate
+// WorkManager callback entry point
+@pragma('vm:entry-point')
 void callbackDispatcher() {
   Workmanager().executeTask((task, inputData) async {
-    switch (task) {
-      case 'seedMissingSongs':
-        try {
-          final prefs = await SharedPreferences.getInstance();
-          final consent = prefs.getBool('disclaimerAccepted') ?? false;
+    if (task == 'seedMissingSongs') {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final consent = prefs.getBool('disclaimerAccepted') ?? false;
 
-          if (!consent) {
-            print('[Workmanager] Disclaimer not accepted, skipping seeding.');
-            break;
-          }
-
-          final seeder = MusicSeederService(); // instantiate your seeder here
-
-          await seeder.init();
-          await seeder.seedMissingSongs();
-
-          print('[Workmanager] Successfully seeded missing songs.');
-        } catch (e, stack) {
-          print('[Workmanager] Error during seeding: $e\n$stack');
+        if (!consent) {
+          print('[Workmanager] Disclaimer not accepted, skipping seeding.');
+          return Future.value(true);
         }
-        break;
-    }
 
+        final seeder = MusicSeederService();
+        await seeder.init();
+        await seeder.seedMissingSongs();
+
+        print('[Workmanager] Successfully seeded missing songs.');
+      } catch (e, stack) {
+        print('[Workmanager] Error during seeding: $e\n$stack');
+      }
+    }
     return Future.value(true);
   });
 }

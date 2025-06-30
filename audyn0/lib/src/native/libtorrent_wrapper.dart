@@ -4,16 +4,18 @@ import 'package:flutter/services.dart';
 class LibtorrentWrapper {
   static const MethodChannel _channel = MethodChannel('libtorrent_wrapper');
 
-  /// Adds a torrent file to the session with full swarm config.
+  /// Adds a torrent to the libtorrent session.
+  /// Use this to join or seed Audyn P2P-only torrents.
   static Future<bool> addTorrent(
       String torrentFilePath, {
         required String savePath,
         bool seedMode = false,
         bool announce = false,
-        bool enableDHT = true,
-        bool enableLSD = true,
+        bool enableDHT = false,         // 🔕 Disable public DHT
+        bool enableLSD = true,          // ✅ Enable local peer discovery
         bool enableUTP = true,
-        bool enableTrackers = true,
+        bool enableTrackers = false,    // 🔕 Disable public trackers
+        bool enablePeerExchange = true, // ✅ Local peer gossip
       }) async {
     try {
       final result = await _channel.invokeMethod<bool>('addTorrent', {
@@ -25,6 +27,7 @@ class LibtorrentWrapper {
         'enableLSD': enableLSD,
         'enableUTP': enableUTP,
         'enableTrackers': enableTrackers,
+        'enablePeerExchange': enablePeerExchange,
       });
       return result == true;
     } catch (e, stacktrace) {
@@ -33,7 +36,6 @@ class LibtorrentWrapper {
     }
   }
 
-  /// Gets libtorrent version.
   static Future<String> getVersion() async {
     try {
       final version = await _channel.invokeMethod<String>('getVersion');
@@ -44,7 +46,8 @@ class LibtorrentWrapper {
     }
   }
 
-  /// Creates a .torrent file from a given path.
+  /// Creates a .torrent file from a given file path.
+  /// For Audyn, this should be run without trackers to enforce hash determinism.
   static Future<bool> createTorrent(
       String path,
       String torrentFilePath, {
@@ -54,11 +57,8 @@ class LibtorrentWrapper {
       final Map<String, dynamic> args = {
         'filePath': path,
         'outputPath': torrentFilePath,
+        'trackers': trackers ?? [], // Default to empty list
       };
-
-      if (trackers != null && trackers.isNotEmpty) {
-        args['trackers'] = trackers;
-      }
 
       final result = await _channel.invokeMethod<bool>('createTorrent', args);
       return result == true;
@@ -68,7 +68,7 @@ class LibtorrentWrapper {
     }
   }
 
-  /// Extracts the info hash from a .torrent file.
+  /// Extracts the infoHash from a .torrent file.
   static Future<String?> getInfoHash(String torrentPath) async {
     try {
       final result = await _channel.invokeMethod<String>('getInfoHash', torrentPath);
@@ -79,7 +79,7 @@ class LibtorrentWrapper {
     }
   }
 
-  /// Gets torrent stats (list of objects in JSON).
+  /// Returns all active torrent stats in JSON.
   static Future<String> getTorrentStats() async {
     try {
       final result = await _channel.invokeMethod<String>('getTorrentStats');
@@ -90,7 +90,7 @@ class LibtorrentWrapper {
     }
   }
 
-  /// Retrieves swarm info for a given info hash (optional extension).
+  /// Retrieves swarm info for a given infoHash (if supported).
   static Future<String?> getSwarmInfo(String infoHash) async {
     try {
       final result = await _channel.invokeMethod<String>('getSwarmInfo', infoHash);
@@ -101,7 +101,7 @@ class LibtorrentWrapper {
     }
   }
 
-  /// Removes a torrent by info hash from the libtorrent session.
+  /// Removes a torrent from the session by its infoHash.
   static Future<bool> removeTorrentByInfoHash(String infoHash) async {
     try {
       final bool result = await _channel.invokeMethod<bool>(
@@ -114,5 +114,4 @@ class LibtorrentWrapper {
       return false;
     }
   }
-
 }

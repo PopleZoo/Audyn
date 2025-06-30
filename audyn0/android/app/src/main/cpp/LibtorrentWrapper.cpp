@@ -6,6 +6,7 @@
 #include <mutex>
 #include <vector>
 #include <sstream>
+#include <cstdlib> // for getenv
 
 #include <android/log.h>
 
@@ -40,8 +41,6 @@ namespace fs = std::experimental::filesystem;
 
 static std::unique_ptr<lt::session> global_session;
 static std::mutex session_mutex;
-
-extern "C" {
 
 // === Helpers ===
 static const char* hex_chars = "0123456789abcdef";
@@ -95,26 +94,61 @@ lt::session& get_session() {
     std::lock_guard<std::mutex> lock(session_mutex);
     if (!global_session) {
         lt::settings_pack pack;
+
+        // Logging alerts
         pack.set_int(lt::settings_pack::alert_mask, lt::alert::all_categories);
-        pack.set_bool(lt::settings_pack::enable_dht, true);
-        pack.set_bool(lt::settings_pack::enable_lsd, true);
-        pack.set_bool(lt::settings_pack::enable_upnp, true);
-        pack.set_bool(lt::settings_pack::enable_natpmp, true);
+
+        // Enable only UTP, disable TCP
         pack.set_bool(lt::settings_pack::enable_outgoing_utp, true);
         pack.set_bool(lt::settings_pack::enable_incoming_utp, true);
+        pack.set_bool(lt::settings_pack::enable_outgoing_tcp, false);
+        pack.set_bool(lt::settings_pack::enable_incoming_tcp, false);
+
+        // Disable external discovery and port mappings
+        pack.set_bool(lt::settings_pack::enable_dht, false);
+        pack.set_bool(lt::settings_pack::enable_lsd, false);
+        pack.set_bool(lt::settings_pack::enable_upnp, false);
+        pack.set_bool(lt::settings_pack::enable_natpmp, false);
+
+        // Use env var for port or default 6881
+        const char* port_env = std::getenv("LIBTORRENT_LISTEN_PORT");
+        int port = 6881;
+        if (port_env) {
+            try {
+                port = std::stoi(port_env);
+            } catch (...) {
+                LOGE("[Native] Invalid LIBTORRENT_LISTEN_PORT value, using default 6881");
+            }
+        }
+
+        std::string listen_if = "0.0.0.0:" + std::to_string(port);
+        pack.set_str(lt::settings_pack::listen_interfaces, listen_if);
+        pack.set_int(lt::settings_pack::max_retry_port_bind, 10);
+
         global_session = std::make_unique<lt::session>(pack);
-        LOGI("[Native] libtorrent session initialized");
+        LOGI("[Native] Libtorrent session initialized (isolated) on %s", listen_if.c_str());
     }
     return *global_session;
 }
 
 // === JNI Methods ===
 
+extern "C" {
+
 JNIEXPORT void JNICALL
 Java_com_example_audyn_LibtorrentWrapper_cleanupSession(JNIEnv*, jobject) {
     std::lock_guard<std::mutex> lock(session_mutex);
-    global_session.reset();
-    LOGI("[Native] libtorrent session cleaned up");
+    if (global_session) {
+        auto handles = global_session->get_torrents();
+        for (auto& h : handles) {
+            if (h.is_valid()) {
+                global_session->remove_torrent(h, lt::session::delete_files);
+            }
+        }
+        global_session->pause();
+        global_session.reset();
+        LOGI("[Native] libtorrent session cleaned and destroyed");
+    }
 }
 
 JNIEXPORT jstring JNICALL
@@ -134,7 +168,6 @@ Java_com_example_audyn_LibtorrentWrapper_addTorrent(JNIEnv* env, jobject,
                                                     jboolean enableLSD,
                                                     jboolean enableUTP,
                                                     jboolean enableTrackers) {
-
     const char* nativeTorrentPath = env->GetStringUTFChars(torrentFilePath, nullptr);
     const char* nativeSavePath = env->GetStringUTFChars(savePath, nullptr);
 
@@ -144,39 +177,39 @@ Java_com_example_audyn_LibtorrentWrapper_addTorrent(JNIEnv* env, jobject,
     env->ReleaseStringUTFChars(torrentFilePath, nativeTorrentPath);
     env->ReleaseStringUTFChars(savePath, nativeSavePath);
 
-    LOGI("[Native] Adding torrent file: %s", torrentFile.c_str());
-
     try {
         std::ifstream in(torrentFile, std::ios::binary);
-        if (!in) return JNI_FALSE;
+        if (!in) {
+            LOGE("[Native] addTorrent: failed to open file %s", torrentFile.c_str());
+            return JNI_FALSE;
+        }
 
         std::vector<char> buf((std::istreambuf_iterator<char>(in)), {});
         lt::error_code ec;
         lt::bdecode_node node = lt::bdecode(buf, ec);
-        if (ec) return JNI_FALSE;
+        if (ec) {
+            LOGE("[Native] addTorrent: bdecode failed: %s", ec.message().c_str());
+            return JNI_FALSE;
+        }
 
         auto ti = std::make_shared<lt::torrent_info>(node, ec);
-        if (ec) return JNI_FALSE;
+        if (ec) {
+            LOGE("[Native] addTorrent: create torrent_info failed: %s", ec.message().c_str());
+            return JNI_FALSE;
+        }
 
         lt::add_torrent_params params;
         params.ti = ti;
         params.save_path = saveDir;
         if (seedMode) params.flags |= lt::add_torrent_params::flag_seed_mode;
 
-        lt::settings_pack sp;
-        sp.set_bool(lt::settings_pack::enable_dht, enableDHT);
-        sp.set_bool(lt::settings_pack::enable_lsd, enableLSD);
-        sp.set_bool(lt::settings_pack::enable_upnp, announce);
-        sp.set_bool(lt::settings_pack::enable_natpmp, announce);
-        sp.set_bool(lt::settings_pack::enable_outgoing_utp, enableUTP);
-        sp.set_bool(lt::settings_pack::enable_incoming_utp, enableUTP);
-
-        lt::session& ses = get_session();
-        ses.apply_settings(sp);
-        ses.add_torrent(std::move(params), ec);
-
-        return ec ? JNI_FALSE : JNI_TRUE;
+        get_session().async_add_torrent(std::move(params));
+        return JNI_TRUE;
+    } catch (const std::exception& ex) {
+        LOGE("[Native] addTorrent exception: %s", ex.what());
+        return JNI_FALSE;
     } catch (...) {
+        LOGE("[Native] addTorrent unknown exception");
         return JNI_FALSE;
     }
 }
@@ -219,8 +252,12 @@ Java_com_example_audyn_LibtorrentWrapper_createTorrent(JNIEnv* env, jobject,
     try {
         fs::path input(inputPath);
         fs::path output(outPath);
-
-        if (!fs::exists(input)) return JNI_FALSE;
+        if (!fs::exists(input)) {
+            LOGE("[Native] createTorrent: input path does not exist: %s", input.string().c_str());
+            env->ReleaseStringUTFChars(filePath, inputPath);
+            env->ReleaseStringUTFChars(outputPath, outPath);
+            return JNI_FALSE;
+        }
 
         lt::file_storage fs_storage;
         lt::add_files(fs_storage, input.string());
@@ -245,11 +282,15 @@ Java_com_example_audyn_LibtorrentWrapper_createTorrent(JNIEnv* env, jobject,
         env->ReleaseStringUTFChars(filePath, inputPath);
         env->ReleaseStringUTFChars(outputPath, outPath);
         return JNI_TRUE;
+    } catch (const std::exception& ex) {
+        LOGE("[Native] createTorrent exception: %s", ex.what());
     } catch (...) {
-        env->ReleaseStringUTFChars(filePath, inputPath);
-        env->ReleaseStringUTFChars(outputPath, outPath);
-        return JNI_FALSE;
+        LOGE("[Native] createTorrent unknown exception");
     }
+
+    env->ReleaseStringUTFChars(filePath, inputPath);
+    env->ReleaseStringUTFChars(outputPath, outPath);
+    return JNI_FALSE;
 }
 
 JNIEXPORT jstring JNICALL
@@ -315,7 +356,10 @@ Java_com_example_audyn_LibtorrentWrapper_getSwarmInfo(JNIEnv* env, jobject, jstr
 JNIEXPORT jboolean JNICALL
 Java_com_example_audyn_LibtorrentWrapper_removeTorrentByInfoHash(JNIEnv* env, jobject, jstring jInfoHash) {
     std::lock_guard<std::mutex> lock(session_mutex);
-    if (!global_session) return JNI_FALSE;
+    if (!global_session) {
+        LOGE("[Native] removeTorrentByInfoHash called but session is null");
+        return JNI_FALSE;
+    }
 
     const char* cHash = env->GetStringUTFChars(jInfoHash, nullptr);
     std::string infoHash(cHash);
@@ -324,10 +368,18 @@ Java_com_example_audyn_LibtorrentWrapper_removeTorrentByInfoHash(JNIEnv* env, jo
     try {
         lt::sha1_hash hash = hex_to_sha1(infoHash);
         lt::torrent_handle handle = global_session->find_torrent(hash);
-        if (!handle.is_valid()) return JNI_FALSE;
+        if (!handle.is_valid()) {
+            LOGE("[Native] removeTorrentByInfoHash: torrent handle invalid for hash %s", infoHash.c_str());
+            return JNI_FALSE;
+        }
         global_session->remove_torrent(handle);
+        LOGI("[Native] Torrent removed: %s", infoHash.c_str());
         return JNI_TRUE;
+    } catch (const std::exception& ex) {
+        LOGE("[Native] removeTorrentByInfoHash exception: %s", ex.what());
+        return JNI_FALSE;
     } catch (...) {
+        LOGE("[Native] removeTorrentByInfoHash unknown exception");
         return JNI_FALSE;
     }
 }

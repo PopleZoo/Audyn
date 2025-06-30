@@ -21,19 +21,28 @@ class LibtorrentService {
     }
   }
 
-  /// Add torrent with swarm parameters (savePath is where downloaded content will be saved).
-  /// Swarm is contained: no trackers, no DHT, no LSD.
-  Future<bool> addTorrent(String torrentPath, String savePath) async {
+  Future<bool> addTorrent(
+      String filePath,
+      String savePath, {
+        bool seedMode = true,
+        bool announce = false,
+        bool enableDHT = false,
+        bool enableLSD = false,
+        bool enableUTP = true,
+        bool enableTrackers = false,
+        bool enablePeerExchange = true,
+      }) async {
     try {
       final result = await _channel.invokeMethod('addTorrent', {
-        'torrentPath': torrentPath,
+        'filePath': filePath,
         'savePath': savePath,
-        'seedMode': true,
-        'announce': false,           // Disable tracker announces
-        'enableDHT': false,          // Disable global DHT
-        'enableLSD': false,          // Disable local service discovery (optional: true if LAN peers wanted)
-        'enableUTP': true,           // Keep uTP enabled (optional)
-        'enableTrackers': false,     // Disable tracker support altogether
+        'seedMode': seedMode,
+        'announce': announce,
+        'enableDHT': enableDHT,
+        'enableLSD': enableLSD,
+        'enableUTP': enableUTP,
+        'enableTrackers': enableTrackers,
+        'enablePeerExchange': enablePeerExchange,
       });
       return result == true;
     } catch (e) {
@@ -44,14 +53,11 @@ class LibtorrentService {
 
   Future<bool> createTorrent(String filePath, String outputPath, {List<String>? trackers}) async {
     try {
-      final Map<String, dynamic> args = {
+      final args = {
         'filePath': filePath,
         'outputPath': outputPath,
+        if (trackers != null && trackers.isNotEmpty) 'trackers': trackers,
       };
-
-      if (trackers != null && trackers.isNotEmpty) {
-        args['trackers'] = trackers;
-      }
 
       final result = await _channel.invokeMethod('createTorrent', args);
       return result == true;
@@ -61,13 +67,23 @@ class LibtorrentService {
     }
   }
 
-  Future<bool> removeTorrent(String name) async {
+  Future<bool> removeTorrent(String infoHash) async {
     try {
-      final result = await _channel.invokeMethod('removeTorrent', {'name': name});
+      final result = await _channel.invokeMethod('removeTorrentByInfoHash', {
+        'infoHash': infoHash,
+      });
       return result == true;
     } catch (e) {
       debugPrint('❌ Failed to remove torrent: $e');
       return false;
+    }
+  }
+
+  Future<void> cleanupSession() async {
+    try {
+      await _channel.invokeMethod('cleanupSession');
+    } catch (e) {
+      debugPrint('❌ Failed to clean up session: $e');
     }
   }
 
@@ -162,7 +178,6 @@ class LibtorrentService {
       final tempDir = await getTemporaryDirectory();
       final torrentPath = p.join(tempDir.path, '$fileName.torrent');
 
-      // Create torrent without trackers to keep swarm contained
       final created = await createTorrent(songPath, torrentPath, trackers: []);
       if (!created) return false;
 
@@ -246,10 +261,11 @@ class LibtorrentService {
     try {
       for (int i = 0; i < 60; i++) {
         await Future.delayed(const Duration(seconds: 1));
-        final statsList = jsonDecode(await getTorrentStats());
+        final statsListRaw = await getTorrentStats();
 
-        final torrentStats = (statsList as List).firstWhere(
-              (e) => e['info_hash'] == infoHash,
+        final statsList = jsonDecode(statsListRaw) as List;
+        final torrentStats = statsList.firstWhere(
+              (e) => (e['info_hash'] == infoHash) || (e['name'] == name),
           orElse: () => null,
         );
 
@@ -277,5 +293,18 @@ class LibtorrentService {
     }
 
     bloc.add(CompleteDownload(infoHash, filePath));
+  }
+
+  /// Returns a Map of torrent metadata by querying native code.
+  /// Returns null if no metadata is available or on error.
+  Future<Map<String, dynamic>?> getTorrentMetadata(String infoHash) async {
+    try {
+      final result = await _channel.invokeMethod<String>('getTorrentMetadata', {'infoHash': infoHash});
+      if (result == null || result.isEmpty) return null;
+      return jsonDecode(result) as Map<String, dynamic>;
+    } catch (e) {
+      debugPrint('❌ Failed to get torrent metadata: $e');
+      return null;
+    }
   }
 }

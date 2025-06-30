@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_media_metadata/flutter_media_metadata.dart';
 import 'package:path/path.dart' as p;
@@ -9,6 +10,11 @@ import 'package:on_audio_query/on_audio_query.dart';
 import '../src/data/services/LibtorrentService.dart';
 import '../src/native/libtorrent_wrapper.dart';
 
+String computeAudynInfoHash(String fileName) {
+  final input = 'audyn_$fileName';
+  return sha1.convert(utf8.encode(input)).toString();
+}
+
 class MusicSeederService {
   final OnAudioQuery audioQuery;
   final Set<String> knownHashes = {};
@@ -16,15 +22,24 @@ class MusicSeederService {
   late final String hashToPathMapPath;
   late final String torrentsDir;
 
-  Map<String, String> _hashToPathMap = {};
+  final Map<String, String> _hashToPathMap = {};
 
-  /// Public getter to expose infoHash → file path mapping
   Map<String, String> get hashToPathMap => _hashToPathMap;
 
   MusicSeederService([OnAudioQuery? audioQuery])
       : audioQuery = audioQuery ?? OnAudioQuery();
 
-  /// Initializes directory paths and loads stored data.
+  static const List<String> allowedExtensions = ['.mp3', '.flac', '.wav', '.m4a'];
+
+  Future<void> _initPaths() async {
+    final directory = await getApplicationDocumentsDirectory();
+    final basePath = directory.path;
+
+    hashDbPath = p.join(basePath, 'known_hashes.json');
+    hashToPathMapPath = p.join(basePath, 'known_hashes_map.json');
+    torrentsDir = p.join(basePath, 'torrents');
+  }
+
   Future<void> init() async {
     await _initPaths();
     await _loadKnownHashes();
@@ -37,30 +52,14 @@ class MusicSeederService {
     }
   }
 
-  Future<void> _initPaths() async {
-    final directory = await getApplicationDocumentsDirectory();
-    final basePath = directory.path;
-
-    hashDbPath = p.join(basePath, 'known_hashes.json');
-    hashToPathMapPath = p.join(basePath, 'known_hashes_map.json');
-    torrentsDir = p.join(basePath, 'torrents');
-  }
-
-  /// Deletes stored seeding info and resets internal state.
+  /// Fully resets seeding state: clears local caches and deletes known files.
   Future<void> resetSeedingState() async {
     try {
       final hashFile = File(hashDbPath);
       final mapFile = File(hashToPathMapPath);
 
-      if (await hashFile.exists()) {
-        await hashFile.delete();
-        debugPrint('[Seeder] 🔄 Deleted known_hashes.json');
-      }
-
-      if (await mapFile.exists()) {
-        await mapFile.delete();
-        debugPrint('[Seeder] 🔄 Deleted known_hashes_map.json');
-      }
+      if (await hashFile.exists()) await hashFile.delete();
+      if (await mapFile.exists()) await mapFile.delete();
 
       knownHashes.clear();
       _hashToPathMap.clear();
@@ -70,12 +69,62 @@ class MusicSeederService {
     }
   }
 
-  /// Queries device music library and seeds valid songs.
-  /// Optional delay between adding torrents to avoid overwhelming resources.
-  Future<void> seedMissingSongs({Duration delayBetweenAdds = const Duration(milliseconds: 200)}) async {
-    // NOTE: In background isolate, audioQuery permission may not be available
-    // So check and skip if no permission or audioQuery not initialized.
+  /// Fully restart seeding:
+  /// 1. Clears known hash files and maps,
+  /// 2. Removes all torrents from libtorrent,
+  /// 3. Resets caches,
+  /// 4. Seeds local music files fresh.
+  /// Fully restart seeding:
+  /// 1. Ensures the service is initialized (paths ready),
+  /// 2. Clears known hash files and maps,
+  /// 3. Removes all torrents from libtorrent,
+  /// 4. Resets caches,
+  /// 5. Seeds local music files fresh.
+  Future<void> restartSeeding() async {
+    debugPrint('[Seeder] Starting full seeding restart...');
 
+    // Ensure initialization done first
+    await init();
+
+    // Step 1: Reset local seeding state (delete JSON files + clear maps)
+    await resetSeedingState();
+
+    // Step 2: Remove all torrents currently loaded in libtorrent
+    try {
+      final rawStats = await LibtorrentWrapper.getTorrentStats();
+      final List<Map<String, dynamic>> currentTorrents =
+      (jsonDecode(rawStats) as List).whereType<Map<String, dynamic>>().toList();
+
+      for (final torrent in currentTorrents) {
+        final infoHash = torrent['info_hash']?.toString();
+        if (infoHash == null || infoHash.isEmpty) continue;
+
+        final removed = await LibtorrentWrapper.removeTorrentByInfoHash(infoHash);
+        if (removed) {
+          debugPrint('[Seeder] Removed torrent from libtorrent: $infoHash');
+        } else {
+          debugPrint('[Seeder] Failed to remove torrent: $infoHash');
+        }
+      }
+    } catch (e) {
+      debugPrint('[Seeder] Exception during torrent removal: $e');
+    }
+
+    // Step 3: Clear in-memory caches (redundant but safe)
+    knownHashes.clear();
+    _hashToPathMap.clear();
+
+    // Step 4: Save empty caches to disk
+    await _saveKnownHashes();
+    await _saveHashToPathMap();
+
+    // Step 5: Re-seed music files from scratch
+    await seedMissingSongs();
+
+    debugPrint('[Seeder] Full seeding restart complete.');
+  }
+
+  Future<void> seedMissingSongs({Duration delayBetweenAdds = const Duration(milliseconds: 200)}) async {
     try {
       final permission = await audioQuery.permissionsStatus();
       if (!permission) {
@@ -88,14 +137,10 @@ class MusicSeederService {
     }
 
     final List<SongModel> allSongs = await audioQuery.querySongs();
-    const allowedExtensions = ['.mp3', '.flac', '.wav', '.m4a'];
     final List<String> validFilePaths = [];
-
-    debugPrint('[Seeder] 🔍 Filtering ${allSongs.length} total files...');
 
     for (final song in allSongs) {
       final ext = p.extension(song.data).toLowerCase();
-
       if (!(song.isMusic == true && allowedExtensions.contains(ext))) continue;
 
       final file = File(song.data);
@@ -108,28 +153,20 @@ class MusicSeederService {
             (metadata.authorName?.trim().isNotEmpty ?? false) ||
             (metadata.albumName?.trim().isNotEmpty ?? false);
 
-        final durationOk = (metadata.trackDuration != null && metadata.trackDuration! > 30 * 1000); // > 30s
+        final durationOk = (metadata.trackDuration != null && metadata.trackDuration! > 30 * 1000);
 
         if (hasAnyMetadata && durationOk) {
           validFilePaths.add(song.data);
-          debugPrint('[Seeder] ✅ Valid song: ${metadata.trackName ?? song.title} - ${metadata.authorName ?? "Unknown"}');
-        } else {
-          debugPrint('[Seeder] ⚠️ Skipping: Incomplete metadata or short duration - ${song.title}');
         }
-      } catch (e) {
-        debugPrint('[Seeder] ⚠️ Failed to read metadata for: ${song.data}\n$e');
+      } catch (e, st) {
+        debugPrint('[Seeder] Failed to read metadata for ${song.data}: $e\n$st');
       }
     }
 
-    debugPrint('[Seeder] 🎶 ${validFilePaths.length} valid songs to seed.');
     await seedFiles(validFilePaths, delayBetweenAdds: delayBetweenAdds);
   }
 
-  /// Seeds the given list of file paths by creating & adding torrents if needed.
-  Future<void> seedFiles(
-      List<String> filePaths, {
-        Duration delayBetweenAdds = const Duration(milliseconds: 100),
-      }) async {
+  Future<void> seedFiles(List<String> filePaths, {Duration delayBetweenAdds = const Duration(milliseconds: 100)}) async {
     try {
       final rawStats = await LibtorrentWrapper.getTorrentStats();
       final List<Map<String, dynamic>> currentTorrents =
@@ -139,48 +176,9 @@ class MusicSeederService {
           .whereType<String>()
           .toSet();
 
-      // --- CLEANUP stale torrents (file missing & only 1 seeder) ---
-      for (final t in currentTorrents) {
-        final infoHash = t['info_hash']?.toString();
-        if (infoHash == null) continue;
-
-        final filePath = _hashToPathMap[infoHash];
-        final fileExists = filePath != null ? await File(filePath).exists() : false;
-        final seeders = t['seeders'] ?? 0;
-
-        if (!fileExists && seeders == 1 && knownHashes.contains(infoHash)) {
-          // Remove stale torrent
-          debugPrint('[Seeder] 🧹 Removing stale torrent with no file and single seeder: $infoHash');
-
-          // Remove from known lists
-          knownHashes.remove(infoHash);
-          _hashToPathMap.remove(infoHash);
-
-          // Delete torrent file if exists
-          final torrentPath = getTorrentFilePathForHash(infoHash);
-          if (torrentPath != null) {
-            final torrentFile = File(torrentPath);
-            if (await torrentFile.exists()) {
-              await torrentFile.delete();
-              debugPrint('[Seeder] Deleted torrent file at $torrentPath');
-            }
-          }
-
-          // Remove torrent from libtorrent swarm
-          await LibtorrentWrapper.removeTorrentByInfoHash(infoHash);
-
-          // Save updated maps
-          await _saveKnownHashes();
-          await _saveHashToPathMap();
-        }
-      }
-
       for (final path in filePaths) {
         final file = File(path);
-        if (!await file.exists()) {
-          debugPrint('[Seeder] ❌ File missing: $path');
-          continue;
-        }
+        if (!await file.exists()) continue;
 
         final title = p.basenameWithoutExtension(path);
         final safeTitle = title.replaceAll(RegExp(r"[^\w\s]"), "_");
@@ -188,33 +186,18 @@ class MusicSeederService {
         final torrentFile = File(torrentFilePath);
 
         try {
-          // 🌀 Step 1: Create torrent if not yet created
           if (!await torrentFile.exists()) {
             final created = await LibtorrentWrapper.createTorrent(
               path,
               torrentFilePath,
-              trackers: [
-                'udp://tracker.opentrackr.org:1337/announce',
-                'udp://tracker.openbittorrent.com:80/announce',
-                'udp://tracker.leechers-paradise.org:6969/announce',
-                'udp://explodie.org:6969/announce',
-                'udp://tracker.coppersurfer.tk:6969/announce',
-              ],
+              trackers: [], // ⚠️ Optional: Remove if going trackerless
             );
-            if (!created) {
-              debugPrint('[Seeder] ❌ Failed to create .torrent: $title');
-              continue;
-            }
+            if (!created) continue;
           }
 
-          // 🌀 Step 2: Get infoHash from .torrent
           final infoHash = await LibtorrentWrapper.getInfoHash(torrentFilePath);
-          if (infoHash == null || infoHash.isEmpty) {
-            debugPrint('[Seeder] ❌ Invalid info_hash: $title');
-            continue;
-          }
+          if (infoHash == null || infoHash.isEmpty) continue;
 
-          // 🌀 Step 3: Check if known or active
           final isKnown = knownHashes.contains(infoHash);
           final isActive = activeHashes.contains(infoHash);
 
@@ -222,42 +205,35 @@ class MusicSeederService {
             if (isKnown && !isActive) {
               knownHashes.remove(infoHash);
               _hashToPathMap.remove(infoHash);
-              debugPrint('[Seeder] 🧹 Removed stale: $title');
             }
 
-            // 🌀 Step 4: Add torrent to swarm with full seeding config
             final added = await LibtorrentWrapper.addTorrent(
               torrentFilePath,
               savePath: p.dirname(path),
               seedMode: true,
-              announce: true,
-              enableDHT: true,
-              enableLSD: true,
+              announce: false, // P2P only
+              enableDHT: false, // disable public DHT
+              enableLSD: true, // local peer discovery
               enableUTP: true,
-              enableTrackers: true,
+              enableTrackers: false, // disable public trackers
+              enablePeerExchange: true,
             );
 
-            if (!added) {
-              debugPrint('[Seeder] ❌ Failed to add to swarm: $title');
-              continue;
-            }
+            if (!added) continue;
 
             knownHashes.add(infoHash);
             _hashToPathMap[infoHash] = path;
             await _saveKnownHashes();
             await _saveHashToPathMap();
-
-            debugPrint('[Seeder] ✅ Seeding: $title');
+            debugPrint('[Seeder] ✅ Seeding (P2P): $title');
             await Future.delayed(delayBetweenAdds);
-          } else {
-            debugPrint('[Seeder] 🔁 Already active: $title');
           }
         } catch (e) {
           debugPrint('[Seeder] ⚠️ Error: $title\n$e');
         }
       }
     } catch (e) {
-      debugPrint('[Seeder] 🚨 Failed to fetch current torrents: $e');
+      debugPrint('[Seeder] 🚨 Torrent fetch failed: $e');
     }
   }
 
@@ -265,23 +241,17 @@ class MusicSeederService {
     if (!knownHashes.contains(infoHash)) return false;
 
     try {
-      // Remove torrent from libtorrent swarm
       await LibtorrentWrapper.removeTorrentByInfoHash(infoHash);
 
-      // Delete .torrent file if exists
       final torrentPath = getTorrentFilePathForHash(infoHash);
       if (torrentPath != null) {
         final torrentFile = File(torrentPath);
-        if (await torrentFile.exists()) {
-          await torrentFile.delete();
-        }
+        if (await torrentFile.exists()) await torrentFile.delete();
       }
 
-      // Remove from known hashes and map
       knownHashes.remove(infoHash);
       _hashToPathMap.remove(infoHash);
 
-      // Save updated state
       await _saveKnownHashes();
       await _saveHashToPathMap();
 
@@ -293,31 +263,22 @@ class MusicSeederService {
     }
   }
 
-
   Future<void> _loadKnownHashes() async {
     final file = File(hashDbPath);
     if (await file.exists()) {
       try {
         final content = await file.readAsString();
-        final List<dynamic> jsonList = jsonDecode(content);
-        knownHashes
-          ..clear()
-          ..addAll(jsonList.whereType<String>());
-        debugPrint('[Seeder] Loaded ${knownHashes.length} known hashes.');
-      } catch (e) {
-        debugPrint('[Seeder] ⚠️ Failed to load known hashes: $e');
+        knownHashes..clear()..addAll(jsonDecode(content).whereType<String>());
+      } catch (e, st) {
+        debugPrint('[Seeder] Failed to load known hashes: $e\n$st');
       }
     }
   }
 
   Future<void> _saveKnownHashes() async {
-    final file = File(hashDbPath);
-    try {
-      await file.writeAsString(jsonEncode(knownHashes.toList()));
-      debugPrint('[Seeder] Saved ${knownHashes.length} known hashes.');
-    } catch (e) {
-      debugPrint('[Seeder] ⚠️ Failed to save known hashes: $e');
-    }
+    final tempFile = File('$hashDbPath.tmp');
+    await tempFile.writeAsString(jsonEncode(knownHashes.toList()));
+    await tempFile.rename(hashDbPath);
   }
 
   Future<void> _loadHashToPathMap() async {
@@ -325,26 +286,20 @@ class MusicSeederService {
     if (await file.exists()) {
       try {
         final content = await file.readAsString();
-        final Map<String, dynamic> decoded = jsonDecode(content);
-        _hashToPathMap = decoded.map((key, value) => MapEntry(key, value.toString()));
-        debugPrint('[Seeder] Loaded hash→path map with ${_hashToPathMap.length} entries.');
-      } catch (e) {
-        debugPrint('[Seeder] ⚠️ Failed to load hash→path map: $e');
+        _hashToPathMap.clear();
+        _hashToPathMap.addAll(Map<String, String>.from(jsonDecode(content)));
+      } catch (e, st) {
+        debugPrint('[Seeder] Failed to load hash-to-path map: $e\n$st');
       }
     }
   }
 
   Future<void> _saveHashToPathMap() async {
-    final file = File(hashToPathMapPath);
-    try {
-      await file.writeAsString(jsonEncode(_hashToPathMap));
-      debugPrint('[Seeder] Saved hash→path map with ${_hashToPathMap.length} entries.');
-    } catch (e) {
-      debugPrint('[Seeder] ⚠️ Failed to save hash→path map: $e');
-    }
+    final tempFile = File('$hashToPathMapPath.tmp');
+    await tempFile.writeAsString(jsonEncode(_hashToPathMap));
+    await tempFile.rename(hashToPathMapPath);
   }
 
-  /// Returns the .torrent file path associated with an infoHash, or null if unknown.
   String? getTorrentFilePathForHash(String infoHash) {
     if (!knownHashes.contains(infoHash)) return null;
     final title = p.basenameWithoutExtension(_hashToPathMap[infoHash] ?? infoHash);
