@@ -15,11 +15,18 @@ class LoadDownloads extends DownloadsEvent {}
 class StartDownload extends DownloadsEvent {
   final String infoHash;
   final String name;
+  final String destinationFolder;
+  final List<String> playlist; // playlist of IDs or names, can be empty
 
-  StartDownload(this.infoHash, this.name);
+  StartDownload({
+    required this.infoHash,
+    required this.name,
+    required this.destinationFolder,
+    this.playlist = const [],
+  });
 
   @override
-  List<Object?> get props => [infoHash, name];
+  List<Object?> get props => [infoHash, name, destinationFolder, playlist];
 }
 
 class UpdateDownloadProgress extends DownloadsEvent {
@@ -88,7 +95,6 @@ class DownloadsBloc extends Bloc<DownloadsEvent, DownloadsState> {
   }
 
   Future<void> _onLoadDownloads(LoadDownloads event, Emitter<DownloadsState> emit) async {
-    // TODO: Load persisted downloads from repository (e.g. Hive, DB)
     final loadedDownloads = await repository.getAllDownloads();
     emit(state.copyWith(downloads: loadedDownloads));
   }
@@ -101,14 +107,16 @@ class DownloadsBloc extends Bloc<DownloadsEvent, DownloadsState> {
         name: event.name,
         status: 'downloading',
         progress: 0.0,
+        destinationFolder: event.destinationFolder,
+        playlist: event.playlist,
       );
       final updatedList = List<DownloadItem>.from(state.downloads)..add(newDownload);
       emit(state.copyWith(downloads: updatedList));
 
-      // TODO: Persist new download to repository
+      // Persist new download to repository
       repository.addDownload(newDownload);
 
-      // TODO: Start actual download process (network request, torrent client, etc)
+      // TODO: Start actual download process, passing destinationFolder and playlist
     }
   }
 
@@ -116,10 +124,7 @@ class DownloadsBloc extends Bloc<DownloadsEvent, DownloadsState> {
     final updated = state.downloads.map((d) {
       if (d.infoHash == event.infoHash) {
         final updatedDownload = d.copyWith(progress: event.progress);
-
-        // TODO: Update download progress in repository if needed
         repository.updateDownload(updatedDownload);
-
         return updatedDownload;
       }
       return d;
@@ -135,17 +140,12 @@ class DownloadsBloc extends Bloc<DownloadsEvent, DownloadsState> {
           progress: 1.0,
           filePath: event.filePath,
         );
-
-        // TODO: Update completed download in repository
         repository.updateDownload(updatedDownload);
-
         return updatedDownload;
       }
       return d;
     }).toList();
     emit(state.copyWith(downloads: updated));
-
-    // TODO: Optionally trigger playback or notification here
   }
 
   void _onFailDownload(FailDownload event, Emitter<DownloadsState> emit) {
@@ -155,24 +155,17 @@ class DownloadsBloc extends Bloc<DownloadsEvent, DownloadsState> {
           status: 'failed',
           progress: 0.0,
         );
-
-        // TODO: Update failed download in repository
         repository.updateDownload(updatedDownload);
-
         return updatedDownload;
       }
       return d;
     }).toList();
     emit(state.copyWith(downloads: updated));
-
-    // TODO: Optionally trigger retry logic or user notification here
   }
 
   void _onDeleteDownload(DeleteDownload event, Emitter<DownloadsState> emit) {
     final filtered = state.downloads.where((d) => d.infoHash != event.infoHash).toList();
     emit(state.copyWith(downloads: filtered));
-
-    // TODO: Delete download from repository and possibly delete file from storage
     repository.removeDownload(event.infoHash);
   }
 }

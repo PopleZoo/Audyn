@@ -304,7 +304,10 @@ Java_com_example_audyn_LibtorrentWrapper_getTorrentStats(JNIEnv* env, jobject) {
 
     for (size_t i = 0; i < handles.size(); ++i) {
         lt::torrent_status st = handles[i].status();
+        std::string infoHashHex = to_hex(handles[i].info_hash().to_string());
+
         json << "{";
+        json << "\"info_hash\":\"" << infoHashHex << "\",";
         json << "\"name\":\"" << (st.name.empty() ? "Unknown" : st.name) << "\",";
         json << "\"state\":" << static_cast<int>(st.state) << ",";
         json << "\"peers\":" << st.num_peers << ",";
@@ -317,6 +320,7 @@ Java_com_example_audyn_LibtorrentWrapper_getTorrentStats(JNIEnv* env, jobject) {
     json << "]";
     return env->NewStringUTF(json.str().c_str());
 }
+
 
 JNIEXPORT jstring JNICALL
 Java_com_example_audyn_LibtorrentWrapper_getInfoHash(JNIEnv* env, jobject, jstring filePath) {

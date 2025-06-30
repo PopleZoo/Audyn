@@ -2,106 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../../../services/music_seeder_service.dart';
+import '../../../../bloc/Downloads/DownloadsBloc.dart';
 import '../../../../data/services/LibtorrentService.dart';
-
-// Paste or import your buildTorrentTile function here
-Widget buildTorrentTile(
-    Map<String, dynamic> t,
-    BuildContext context,
-    VoidCallback onTap,
-    ) {
-  final name = t['name'] ?? 'Unknown';
-  final uploadRateKb = (t['upload_rate'] ?? 0) / 1024;
-  final downloadRateKb = (t['download_rate'] ?? 0) / 1024;
-
-  final displayTitle = (t['meta_title'] as String?)?.trim() ?? 'unknown';
-  final displayArtist = (t['meta_artist'] as String?)?.trim() ?? 'unknown';
-  final displayAlbum = (t['meta_album'] as String?)?.trim() ?? 'unknown';
-  final Uint8List? albumArt = t['meta_albumArt'] as Uint8List?;
-
-  final bool isSeeding = (t['state'] ?? -1) == 5; // Seeding state index
-  final bool isLocalFile = (t['file_found'] ?? false) == true;
-
-  String mapState(int state) {
-    const states = [
-      'Queued',
-      'Checking',
-      'Downloading Metadata',
-      'Downloading',
-      'Finished',
-      'Seeding',
-      'Allocating',
-      'Checking Resume',
-      'Unknown'
-    ];
-    return (state >= 0 && state < states.length) ? states[state] : 'Unknown';
-  }
-
-  String getDisplayState(Map<String, dynamic> t) {
-    final bool local = (t['file_found'] ?? false) == true;
-    final int state = t['state'] ?? -1;
-    final int seeders = t['seeders'] ?? 0;
-    final int peers = t['peers'] ?? 0;
-
-    if (local) {
-      return "Local • Seeders: $seeders • Peers: $peers";
-    }
-
-    return "${mapState(state)} • Seeders: $seeders • Peers: $peers";
-  }
-
-  return ListTile(
-    contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-    leading: albumArt != null
-        ? ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Image.memory(albumArt, width: 56, height: 56, fit: BoxFit.cover),
-    )
-        : const Icon(Icons.music_note, size: 48, color: Colors.purpleAccent),
-    title: Text(
-      displayTitle.isNotEmpty ? displayTitle : name,
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
-    ),
-    subtitle: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (displayArtist.isNotEmpty)
-          Text(
-            displayArtist,
-            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        if (displayAlbum.isNotEmpty)
-          Text(
-            displayAlbum,
-            style: TextStyle(
-              fontSize: 12,
-              color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.6) ?? Colors.grey,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        const SizedBox(height: 4),
-        Text(
-          '${getDisplayState(t)}\n↑ ${uploadRateKb.toStringAsFixed(1)} KB/s • ↓ ${downloadRateKb.toStringAsFixed(1)} KB/s',
-          style: const TextStyle(fontSize: 12),
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-        ),
-      ],
-    ),
-    isThreeLine: true,
-    trailing: isSeeding
-        ? const Icon(Icons.verified, color: Colors.lightBlueAccent)
-        : (isLocalFile ? Icon(Icons.check_circle, color: Theme.of(context).colorScheme.primary) : null),
-    onTap: onTap,
-  );
-}
 
 class SwarmView extends StatefulWidget {
   const SwarmView({Key? key}) : super(key: key);
@@ -122,7 +28,6 @@ class _SwarmViewState extends State<SwarmView> {
   bool _disclaimerAccepted = false;
   Timer? _periodicTimer;
 
-  // Cache metadata to avoid repeated lookups
   final Map<String, Map<String, dynamic>> _metadataCache = {};
 
   @override
@@ -167,16 +72,14 @@ class _SwarmViewState extends State<SwarmView> {
     );
 
     if (accepted == true) {
-      setState(() {
-        _disclaimerAccepted = true;
-      });
+      setState(() => _disclaimerAccepted = true);
 
       try {
         await _musicSeeder.init();
         await _musicSeeder.seedMissingSongs();
-        debugPrint('[SwarmView] User music seeding started after consent.');
+        debugPrint('[SwarmView] Music seeding started after consent.');
       } catch (e) {
-        debugPrint('[SwarmView] Failed to seed user music: $e');
+        debugPrint('[SwarmView] Failed to seed music: $e');
       }
 
       await _fetchTorrentStats();
@@ -201,15 +104,13 @@ class _SwarmViewState extends State<SwarmView> {
         final infoHash = torrent['info_hash']?.toString() ?? '';
         if (infoHash.isEmpty) continue;
 
-        // Fetch metadata once
         if (!_metadataCache.containsKey(infoHash)) {
-          final metadata = await _libtorrentService.getTorrentMetadata(infoHash);
+          final metadata = await _musicSeeder.getMetadataForHash(infoHash);
           _metadataCache[infoHash] = metadata ?? {};
         }
 
-        // Merge metadata into torrent map with meta_ prefix
-        final metadata = _metadataCache[infoHash] ?? {};
-        metadata.forEach((key, value) {
+        final meta = _metadataCache[infoHash]!;
+        meta.forEach((key, value) {
           torrent['meta_$key'] = value;
         });
       }
@@ -221,104 +122,237 @@ class _SwarmViewState extends State<SwarmView> {
         _isError = false;
       });
     } catch (e) {
+      debugPrint('[SwarmView] Error: $e');
       setState(() {
         _isLoading = false;
         _isError = true;
       });
-      debugPrint('[SwarmView] Failed to fetch torrent stats: $e');
     }
   }
 
   void _applySearchFilter() {
-    if (_searchQuery.trim().isEmpty) {
-      _filteredTorrents = List.from(_torrents);
-    } else {
-      final query = _searchQuery.toLowerCase();
-      _filteredTorrents = _torrents.where((torrent) {
-        final infoHash = (torrent['info_hash'] ?? '').toString().toLowerCase();
-        final name = (_metadataCache[infoHash]?['name'] ?? '').toString().toLowerCase();
-        final artist = (_metadataCache[infoHash]?['artist'] ?? '').toString().toLowerCase();
-        return infoHash.contains(query) ||
-            name.contains(query) ||
-            artist.contains(query);
-      }).toList();
-    }
+    final query = _searchQuery.trim().toLowerCase();
+    _filteredTorrents = _torrents.where((torrent) {
+      final infoHash = (torrent['info_hash'] ?? '').toString().toLowerCase();
+      final title = (torrent['meta_title'] ?? '').toString().toLowerCase();
+      final artist = (torrent['meta_artist'] ?? '').toString().toLowerCase();
+      return infoHash.contains(query) || title.contains(query) || artist.contains(query);
+    }).toList();
   }
 
-  void _onTorrentTap(Map<String, dynamic> torrent) {
+  Future<void> _handleTorrentTap(Map<String, dynamic> torrent) async {
     final infoHash = (torrent['info_hash'] ?? '').toString();
-    final meta = _metadataCache[infoHash] ?? {};
-    final name = meta['name'] ?? infoHash;
-    final artist = meta['artist'] ?? 'Unknown Artist';
+    final displayTitle = (torrent['meta_title'] as String?)?.trim() ?? 'Unknown';
+    final isLocalFile = (torrent['file_found'] ?? false) == true;
+    final isSeeding = (torrent['state'] ?? -1) == 5;
 
-    showDialog(
+    if (isSeeding && !isLocalFile) {
+      // Seeding but file not local? Should not download, just notify
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Cannot download "$displayTitle" because it is seeding but file is not local.')),
+      );
+      return;
+    }
+
+    if (isLocalFile) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('"$displayTitle" is already downloaded.')),
+      );
+      return;
+    }
+
+    final confirm = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(name),
-        content: Text('Artist: $artist\nInfo Hash: $infoHash'),
+      builder: (ctx) => AlertDialog(
+        title: Text('Download "$displayTitle"?'),
+        content: const Text('Do you want to download this torrent?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Download')),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    // Ask for playlist input (optional)
+    final playlist = await _askForPlaylist();
+
+    if (playlist == null) {
+      // User cancelled playlist input
+      return;
+    }
+
+    // Ask user to pick destination folder
+    final folderResult = await FilePicker.platform.getDirectoryPath();
+
+    if (folderResult == null) {
+      // User cancelled folder picking
+      return;
+    }
+
+    context.read<DownloadsBloc>().add(
+      StartDownload(
+        infoHash: infoHash,
+        name: displayTitle,
+        destinationFolder: folderResult,
+        playlist: playlist,
+      ),
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Added "$displayTitle" to downloads')),
+    );
+
+    Navigator.pushNamed(context, '/downloads');
+  }
+
+// Helper dialog to input playlist (comma separated)
+  Future<List<String>?> _askForPlaylist() async {
+    TextEditingController controller = TextEditingController();
+
+    final result = await showDialog<List<String>?>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Playlist (optional)'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(
+            labelText: 'Enter playlist items separated by commas',
+            hintText: 'e.g. song1,song2,song3',
+          ),
+        ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final text = controller.text.trim();
+              if (text.isEmpty) {
+                Navigator.pop(ctx, <String>[]);
+              } else {
+                final list = text.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+                Navigator.pop(ctx, list);
+              }
+            },
+            child: const Text('OK'),
           ),
         ],
       ),
     );
+
+    return result;
   }
 
-  Future<void> _resetAndRestartSeeding() async {
-    setState(() {
-      _isLoading = true;
-    });
 
-    try {
-      await _musicSeeder.resetSeedingState();
-      await _musicSeeder.seedMissingSongs();
-      await _fetchTorrentStats();
-      debugPrint('[SwarmView] Seeding reset and restarted.');
-    } catch (e) {
-      debugPrint('[SwarmView] Failed to reset and restart seeding: $e');
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
-    }
+  Widget buildTorrentTile(Map<String, dynamic> t, VoidCallback onTap) {
+    final name = t['name'] ?? 'Unknown';
+    final uploadRateKb = (t['upload_rate'] ?? 0) / 1024;
+    final downloadRateKb = (t['download_rate'] ?? 0) / 1024;
+
+    final displayTitle = (t['meta_title'] as String?)?.trim() ?? 'unknown';
+    final displayArtist = (t['meta_artist'] as String?)?.trim() ?? 'unknown';
+    final displayAlbum = (t['meta_album'] as String?)?.trim() ?? 'unknown';
+    final Uint8List? albumArt = t['meta_albumArt'] as Uint8List?;
+
+    final bool isSeeding = (t['state'] ?? -1) == 5;
+    final bool isLocalFile = (t['file_found'] ?? false) == true;
+    final String infoHash = (t['info_hash'] ?? '').toString();
+    final bool isKnown = _musicSeeder.knownHashes.contains(infoHash);
+
+    const states = [
+      'Queued',
+      'Checking',
+      'Downloading Metadata',
+      'Downloading',
+      'Finished',
+      'Seeding',
+      'Allocating',
+      'Checking Resume',
+      'Unknown'
+    ];
+    final int state = t['state'] ?? -1;
+    final String displayState = (state >= 0 && state < states.length) ? states[state] : 'Unknown';
+    final int seeders = t['seeders'] ?? 0;
+    final int peers = t['peers'] ?? 0;
+
+    return ListTile(
+      enabled: !isLocalFile,
+      contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+      leading: albumArt != null
+          ? ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.memory(albumArt, width: 56, height: 56, fit: BoxFit.cover),
+      )
+          : Icon(
+        Icons.music_note,
+        size: 48,
+        color: isLocalFile ? Colors.grey : Colors.purpleAccent,
+      ),
+      title: Text(
+        displayTitle.isNotEmpty ? displayTitle : name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(color: isLocalFile ? Colors.grey : null),
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (displayArtist.isNotEmpty)
+            Text(
+              displayArtist,
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 14,
+                color: isLocalFile ? Colors.grey : null,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          if (displayAlbum.isNotEmpty)
+            Text(
+              displayAlbum,
+              style: TextStyle(
+                fontSize: 12,
+                color: (Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.6) ?? Colors.grey)
+                    .withOpacity(isLocalFile ? 0.4 : 1.0),
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          const SizedBox(height: 4),
+          Text(
+            '$displayState • Seeders: $seeders • Peers: $peers\n↑ ${uploadRateKb.toStringAsFixed(1)} KB/s • ↓ ${downloadRateKb.toStringAsFixed(1)} KB/s',
+            style: TextStyle(
+              fontSize: 12,
+              color: isLocalFile ? Colors.grey : null,
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
+      isThreeLine: true,
+      trailing: isKnown
+          ? const Icon(Icons.cloud_done_rounded, color: Colors.greenAccent)
+          : (isSeeding
+          ? const Icon(Icons.verified, color: Colors.lightBlueAccent)
+          : (isLocalFile
+          ? Icon(Icons.check_circle, color: Theme.of(context).colorScheme.primary)
+          : null)),
+      onTap: isLocalFile ? null : onTap,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!_disclaimerAccepted) {
-      return const SizedBox.shrink();
-    }
+    if (!_disclaimerAccepted) return const SizedBox.shrink();
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Audyn Swarm'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Reset and Restart Seeding',
-            onPressed: () async {
-              final confirm = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('Confirm Reset'),
-                  content: const Text(
-                    'This will clear all swarm data and restart seeding. Continue?',
-                  ),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-                    ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Yes')),
-                  ],
-                ),
-              );
-              if (confirm == true) {
-                await _resetAndRestartSeeding();
-              }
-            },
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('Audyn Swarm')),
       body: Column(
         children: [
           Padding(
@@ -341,10 +375,10 @@ class _SwarmViewState extends State<SwarmView> {
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
                 : _isError
-                ? Center(
+                ? const Center(
               child: Text(
-                'Failed to load torrents. Pull down to retry.',
-                style: const TextStyle(color: Colors.redAccent),
+                'Failed to load torrents.',
+                style: TextStyle(color: Colors.redAccent),
               ),
             )
                 : RefreshIndicator(
@@ -363,8 +397,7 @@ class _SwarmViewState extends State<SwarmView> {
                 itemCount: _filteredTorrents.length,
                 itemBuilder: (context, index) => buildTorrentTile(
                   _filteredTorrents[index],
-                  context,
-                      () => _onTorrentTap(_filteredTorrents[index]),
+                      () => _handleTorrentTap(_filteredTorrents[index]),
                 ),
               ),
             ),

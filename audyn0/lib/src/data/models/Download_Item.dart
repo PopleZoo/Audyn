@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'dart:typed_data';
 
 class DownloadItem {
   final String infoHash;
@@ -13,6 +14,9 @@ class DownloadItem {
   final int seeders;
   final int peers;
 
+  final String destinationFolder;   // New: download folder path
+  final List<String> playlist;      // New: playlist IDs or names, can be empty
+
   DownloadItem({
     required this.infoHash,
     required this.name,
@@ -25,6 +29,8 @@ class DownloadItem {
     this.filePath = '',
     this.seeders = 0,
     this.peers = 0,
+    this.destinationFolder = '',
+    this.playlist = const [],
   });
 
   DownloadItem copyWith({
@@ -39,6 +45,8 @@ class DownloadItem {
     String? filePath,
     int? seeders,
     int? peers,
+    String? destinationFolder,
+    List<String>? playlist,
   }) {
     return DownloadItem(
       infoHash: infoHash ?? this.infoHash,
@@ -52,6 +60,8 @@ class DownloadItem {
       filePath: filePath ?? this.filePath,
       seeders: seeders ?? this.seeders,
       peers: peers ?? this.peers,
+      destinationFolder: destinationFolder ?? this.destinationFolder,
+      playlist: playlist ?? this.playlist,
     );
   }
 }

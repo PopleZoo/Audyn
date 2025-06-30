@@ -7,6 +7,7 @@ import '../../../../bloc/Downloads/DownloadsBloc.dart';
 class DownloadsView extends StatelessWidget {
   const DownloadsView({super.key});
 
+  // Returns the color for different download statuses
   Color _statusColor(BuildContext context, String status) {
     final colorScheme = Theme.of(context).colorScheme;
     switch (status) {
@@ -21,6 +22,7 @@ class DownloadsView extends StatelessWidget {
     }
   }
 
+  // Returns icon for the status
   IconData _statusIcon(String status) {
     switch (status) {
       case 'completed':
@@ -34,6 +36,7 @@ class DownloadsView extends StatelessWidget {
     }
   }
 
+  // Returns text label for the status
   String _statusText(String status) {
     switch (status) {
       case 'completed':
@@ -56,12 +59,16 @@ class DownloadsView extends StatelessWidget {
       body: BlocBuilder<DownloadsBloc, DownloadsState>(
         builder: (context, state) {
           if (state.downloads.isEmpty) {
+            // Show empty state UI
             return Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.download_for_offline,
-                      size: 64, color: colorScheme.onBackground.withOpacity(0.3)),
+                  Icon(
+                    Icons.download_for_offline,
+                    size: 64,
+                    color: colorScheme.onBackground.withOpacity(0.3),
+                  ),
                   const SizedBox(height: 16),
                   Text(
                     'No downloads found.',
@@ -74,20 +81,22 @@ class DownloadsView extends StatelessWidget {
             );
           }
 
+          // Show list of downloads
           return ListView.separated(
             padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
             itemCount: state.downloads.length,
             separatorBuilder: (_, __) => const SizedBox(height: 8),
             itemBuilder: (context, index) {
               final track = state.downloads[index];
-              final title = (track.title?.isNotEmpty ?? false) ? track.title! : track.name;
-              final artist = track.artist ?? 'Unknown Artist';
-              final album = track.album ?? '';
-              final status = track.status;
-              final progress = track.progress.clamp(0.0, 1.0); // Safe clamping
-              final fileSize = '—'; // Placeholder, add logic if needed
-              final duration = '';   // Placeholder, extend model if needed
-              final destinationFolder = track.filePath ?? '';
+
+              final String title = (track.title?.isNotEmpty ?? false) ? track.title! : track.name;
+              final String artist = track.artist ?? 'Unknown Artist';
+              final String album = track.album ?? '';
+              final String status = track.status;
+              final double progress = (track.progress ?? 0).clamp(0.0, 1.0);
+              final String fileSize = '—'; // TODO: Implement file size display
+              final String duration = '';   // TODO: Implement duration display
+              final String destinationFolder = track.filePath ?? '';
               final Uint8List? albumArt = track.albumArt;
 
               return Material(
@@ -97,9 +106,9 @@ class DownloadsView extends StatelessWidget {
                   borderRadius: BorderRadius.circular(12),
                   onTap: () {
                     if (status == 'completed') {
-                      // TODO: implement playback
+                      // TODO: Implement playback
                     } else if (status == 'failed') {
-                      // TODO: retry logic
+                      // TODO: Implement retry logic
                     }
                   },
                   onLongPress: () {
@@ -130,8 +139,7 @@ class DownloadsView extends StatelessWidget {
                             width: 56,
                             height: 56,
                             color: colorScheme.surfaceVariant,
-                            child: const Icon(Icons.music_note,
-                                color: Colors.white70, size: 36),
+                            child: const Icon(Icons.music_note, color: Colors.white70, size: 36),
                           ),
                         ),
                         const SizedBox(width: 14),
@@ -142,10 +150,12 @@ class DownloadsView extends StatelessWidget {
                               Row(
                                 children: [
                                   Expanded(
-                                    child: Text(title,
-                                        style: theme.textTheme.titleMedium,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis),
+                                    child: Text(
+                                      title,
+                                      style: theme.textTheme.titleMedium,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
                                   ),
                                   if (duration.isNotEmpty)
                                     Text(
@@ -171,9 +181,7 @@ class DownloadsView extends StatelessWidget {
                                 children: [
                                   Row(
                                     children: [
-                                      Icon(_statusIcon(status),
-                                          size: 16,
-                                          color: _statusColor(context, status)),
+                                      Icon(_statusIcon(status), size: 16, color: _statusColor(context, status)),
                                       const SizedBox(width: 6),
                                       Text(
                                         _statusText(status),

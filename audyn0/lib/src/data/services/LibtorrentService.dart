@@ -14,7 +14,8 @@ class LibtorrentService {
 
   Future<String> getVersion() async {
     try {
-      return await _channel.invokeMethod('getVersion');
+      final result = await _channel.invokeMethod<String>('getVersion');
+      return result ?? 'Unknown version';
     } catch (e) {
       debugPrint('❌ Failed to get libtorrent version: $e');
       return 'Unknown version';
@@ -51,7 +52,11 @@ class LibtorrentService {
     }
   }
 
-  Future<bool> createTorrent(String filePath, String outputPath, {List<String>? trackers}) async {
+  Future<bool> createTorrent(
+      String filePath,
+      String outputPath, {
+        List<String>? trackers,
+      }) async {
     try {
       final args = {
         'filePath': filePath,
@@ -99,7 +104,8 @@ class LibtorrentService {
 
   Future<String> getSwarmInfo(String infoHash) async {
     try {
-      final result = await _channel.invokeMethod<String>('getSwarmInfo', {'infoHash': infoHash});
+      // Pass raw string, not Map
+      final result = await _channel.invokeMethod<String>('getSwarmInfo', infoHash);
       return result ?? '{}';
     } catch (e) {
       debugPrint('❌ Failed to get swarm info: $e');
@@ -246,11 +252,22 @@ class LibtorrentService {
     if (infoHash.isEmpty || name.isEmpty) return;
 
     final bloc = context.read<DownloadsBloc>();
-    bloc.add(StartDownload(infoHash, name));
 
+    // TODO: You must supply destinationFolder and playlist when starting download.
+    // Here we use documents directory as destination and empty playlist for example.
     final documentsDir = await getApplicationDocumentsDirectory();
+    final destinationFolder = documentsDir.path;
+    final playlist = <String>[]; // replace with actual playlist IDs or names if available
+
+    bloc.add(StartDownload(
+      infoHash: infoHash,
+      name: name,
+      destinationFolder: destinationFolder,
+      playlist: playlist,
+    ));
+
     final torrentPath = p.join(documentsDir.path, 'torrents', '$name.torrent');
-    final added = await addTorrent(torrentPath, documentsDir.path);
+    final added = await addTorrent(torrentPath, destinationFolder);
 
     if (!added) {
       bloc.add(FailDownload(infoHash));
@@ -295,11 +312,9 @@ class LibtorrentService {
     bloc.add(CompleteDownload(infoHash, filePath));
   }
 
-  /// Returns a Map of torrent metadata by querying native code.
-  /// Returns null if no metadata is available or on error.
   Future<Map<String, dynamic>?> getTorrentMetadata(String infoHash) async {
     try {
-      final result = await _channel.invokeMethod<String>('getTorrentMetadata', {'infoHash': infoHash});
+      final result = await _channel.invokeMethod<String>('getTorrentMetadata', infoHash);
       if (result == null || result.isEmpty) return null;
       return jsonDecode(result) as Map<String, dynamic>;
     } catch (e) {

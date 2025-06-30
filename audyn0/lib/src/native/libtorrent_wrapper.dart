@@ -36,6 +36,7 @@ class LibtorrentWrapper {
     }
   }
 
+  /// Returns libtorrent version string.
   static Future<String> getVersion() async {
     try {
       final version = await _channel.invokeMethod<String>('getVersion');
@@ -54,10 +55,10 @@ class LibtorrentWrapper {
         List<String>? trackers,
       }) async {
     try {
-      final Map<String, dynamic> args = {
+      final args = {
         'filePath': path,
         'outputPath': torrentFilePath,
-        'trackers': trackers ?? [], // Default to empty list
+        'trackers': trackers ?? [],
       };
 
       final result = await _channel.invokeMethod<bool>('createTorrent', args);
@@ -104,13 +105,13 @@ class LibtorrentWrapper {
   /// Removes a torrent from the session by its infoHash.
   static Future<bool> removeTorrentByInfoHash(String infoHash) async {
     try {
-      final bool result = await _channel.invokeMethod<bool>(
+      final result = await _channel.invokeMethod<bool>(
         'removeTorrentByInfoHash',
         {'infoHash': infoHash},
-      ) ?? false;
-      return result;
-    } catch (e) {
-      debugPrint('[LibtorrentWrapper] Failed to remove torrent: $e');
+      );
+      return result == true;
+    } catch (e, stacktrace) {
+      debugPrint('[LibtorrentWrapper] removeTorrentByInfoHash error: $e\n$stacktrace');
       return false;
     }
   }
