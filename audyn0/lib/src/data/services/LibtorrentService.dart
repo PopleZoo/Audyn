@@ -104,6 +104,7 @@ class LibtorrentService {
 
   Future<String> getSwarmInfo(String infoHash) async {
     try {
+      // Pass raw string, not Map
       final result = await _channel.invokeMethod<String>('getSwarmInfo', infoHash);
       return result ?? '{}';
     } catch (e) {
@@ -123,17 +124,15 @@ class LibtorrentService {
     }
   }
 
-  /// Helper: cleans common extraneous characters from song titles/artists
   String _cleanTitle(String input) {
     return input
-        .replaceAll(RegExp(r'\(.*?\)|\[.*?\]'), '') // Remove anything in () or []
-        .replaceAll(RegExp(r'[_\-]'), ' ')          // Replace _ and - with space
-        .replaceAll(RegExp(r'\s+'), ' ')            // Normalize whitespace
+        .replaceAll(RegExp(r'\(.*?\)|\[.*?\]'), '')
+        .replaceAll(RegExp(r'[_\-]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
         .trim()
         .toLowerCase();
   }
 
-  /// Validates song info against MusicBrainz API to avoid fake or unrelated content
   Future<bool> _isSongValid(String title, String artist) async {
     final cleanedTitle = _cleanTitle(title);
     final cleanedArtist = artist.trim().toLowerCase();
@@ -170,7 +169,6 @@ class LibtorrentService {
     }
   }
 
-  /// Adds a song file as a torrent to the swarm, optionally validating title and artist
   Future<bool> addSongToSwarm(String songPath, {String? title, String? artist}) async {
     try {
       final file = File(songPath);
@@ -202,7 +200,6 @@ class LibtorrentService {
     }
   }
 
-  /// Recursively search directory for a file with a specific name
   Future<String?> _recursiveSearchForFile(Directory dir, String targetName) async {
     try {
       await for (final entity in dir.list(recursive: true)) {
@@ -214,7 +211,6 @@ class LibtorrentService {
     return null;
   }
 
-  /// Attempts to resolve a file path for a torrent by searching known locations and a persisted map
   Future<String?> getFilePathForTorrent(Map<String, dynamic> torrent) async {
     try {
       final infoHash = torrent['info_hash'];
@@ -229,7 +225,6 @@ class LibtorrentService {
         if (path != null && await File(path).exists()) return path;
       }
 
-      // Search common directories on device
       final searchDirs = [
         Directory('/storage/emulated/0/Music'),
         Directory('/storage/emulated/0/Download'),
@@ -250,18 +245,19 @@ class LibtorrentService {
     }
   }
 
-  /// Start downloading a torrent with progress updates sent to DownloadsBloc
-  Future<void> downloadTorrent(BuildContext context, Map<String, dynamic> torrent) async {
-    final infoHash = torrent['info_hash'] ?? '';
-    final name = torrent['name'] ?? 'unknown';
+  Future<void> downloadTorrent(BuildContext context, Map<String, dynamic> t) async {
+    final infoHash = t['info_hash'] ?? '';
+    final name = t['name'] ?? 'unknown';
 
     if (infoHash.isEmpty || name.isEmpty) return;
 
     final bloc = context.read<DownloadsBloc>();
 
+    // TODO: You must supply destinationFolder and playlist when starting download.
+    // Here we use documents directory as destination and empty playlist for example.
     final documentsDir = await getApplicationDocumentsDirectory();
     final destinationFolder = documentsDir.path;
-    final playlist = <String>[]; // Provide actual playlist if available
+    final playlist = <String>[]; // replace with actual playlist IDs or names if available
 
     bloc.add(StartDownload(
       infoHash: infoHash,
@@ -307,7 +303,7 @@ class LibtorrentService {
       return;
     }
 
-    final filePath = await getFilePathForTorrent(torrent);
+    final filePath = await getFilePathForTorrent(t);
     if (filePath == null || !(await File(filePath).exists())) {
       bloc.add(FailDownload(infoHash));
       return;
