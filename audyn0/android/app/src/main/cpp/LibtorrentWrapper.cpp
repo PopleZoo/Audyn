@@ -388,4 +388,27 @@ Java_com_example_audyn_LibtorrentWrapper_removeTorrentByInfoHash(JNIEnv* env, jo
     }
 }
 
+JNIEXPORT jstring JNICALL
+        Java_com_example_audyn_LibtorrentWrapper_getTorrentSavePath(JNIEnv* env, jobject /* this */, jstring jInfoHash) {
+const char* infoHashCStr = env->GetStringUTFChars(jInfoHash, nullptr);
+std::string infoHashStr(infoHashCStr);
+env->ReleaseStringUTFChars(jInfoHash, infoHashCStr);
+
+try {
+lt::sha1_hash hash = lt::sha1_hash::from_string(infoHashStr);
+
+lt::torrent_handle handle = g_session->find_torrent(hash);
+if (handle.is_valid()) {
+std::string savePath = handle.save_path();
+return env->NewStringUTF(savePath.c_str());
+}
+} catch (...) {
+// handle exceptions if any
+}
+
+return nullptr; // null if not fou
+}
+
+
+
 } // extern "C"

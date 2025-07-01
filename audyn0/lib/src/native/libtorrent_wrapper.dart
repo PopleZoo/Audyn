@@ -115,4 +115,19 @@ class LibtorrentWrapper {
       return false;
     }
   }
+
+  /// NEW: Get the save path (download folder) for a torrent by its infoHash.
+  /// Returns null if not found or error.
+  static Future<String?> getTorrentSavePath(String infoHash) async {
+    try {
+      final result = await _channel.invokeMethod<String>(
+        'getTorrentSavePath',
+        {'infoHash': infoHash},
+      );
+      return result;
+    } catch (e, stacktrace) {
+      debugPrint('[LibtorrentWrapper] getTorrentSavePath error: $e\n$stacktrace');
+      return null;
+    }
+  }
 }

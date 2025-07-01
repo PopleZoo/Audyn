@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -143,13 +144,18 @@ class _SwarmViewState extends State<SwarmView> {
   Future<void> _handleTorrentTap(Map<String, dynamic> torrent) async {
     final infoHash = (torrent['info_hash'] ?? '').toString();
     final displayTitle = (torrent['meta_title'] as String?)?.trim() ?? 'Unknown';
-    final isLocalFile = (torrent['file_found'] ?? false) == true;
+
     final isSeeding = (torrent['state'] ?? -1) == 5;
 
+    // Check if files are actually local on disk:
+    final isLocalFile = await _isTorrentFilesPresent(infoHash);
+
     if (isSeeding && !isLocalFile) {
-      // Seeding but file not local? Should not download, just notify
+      // You are seeding, but files are not physically found => show proper message
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Cannot download "$displayTitle" because it is seeding but file is not local.')),
+        SnackBar(
+          content: Text('Cannot download "$displayTitle" because you are seeding but files are not present locally.'),
+        ),
       );
       return;
     }
@@ -161,11 +167,12 @@ class _SwarmViewState extends State<SwarmView> {
       return;
     }
 
+    // If neither local nor seeding => proceed to download prompt
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('Download "$displayTitle"?'),
-        content: const Text('Do you want to download this torrent?'),
+        title: const Text('Download?'),
+        content: Text('Do you want to download "$displayTitle"?'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
           ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Download')),
@@ -175,27 +182,15 @@ class _SwarmViewState extends State<SwarmView> {
 
     if (confirm != true) return;
 
-    // Ask for playlist input (optional)
-    final playlist = await _askForPlaylist();
-
-    if (playlist == null) {
-      // User cancelled playlist input
-      return;
-    }
-
-    // Ask user to pick destination folder
-    final folderResult = await FilePicker.platform.getDirectoryPath();
-
-    if (folderResult == null) {
-      // User cancelled folder picking
-      return;
-    }
+    // Prompt for folder and playlist (implement folder picker here)
+    final destinationFolder = await pickFolder(); // Implement folder picker dialog
+    final List<String> playlist = await pickPlaylist(); // Implement playlist selection dialog or leave empty
 
     context.read<DownloadsBloc>().add(
       StartDownload(
         infoHash: infoHash,
         name: displayTitle,
-        destinationFolder: folderResult,
+        destinationFolder: destinationFolder,
         playlist: playlist,
       ),
     );
@@ -205,6 +200,28 @@ class _SwarmViewState extends State<SwarmView> {
     );
 
     Navigator.pushNamed(context, '/downloads');
+  }
+
+  Future<String> pickFolder() async {
+    try {
+      String? folderPath = await FilePicker.platform.getDirectoryPath();
+      if (folderPath == null) {
+        // User canceled the picker
+        return '';
+      }
+      return folderPath;
+    } catch (e) {
+      debugPrint('pickFolder error: $e');
+      return '';
+    }
+  }
+
+  Future<List<String>> pickPlaylist() async {
+    final result = await _askForPlaylist();
+    if (result == null) {
+      return [];
+    }
+    return result;
   }
 
 // Helper dialog to input playlist (comma separated)
@@ -405,5 +422,27 @@ class _SwarmViewState extends State<SwarmView> {
         ],
       ),
     );
+  }
+
+  Future<bool> _isTorrentFilesPresent(String infoHash) async {
+    try {
+      final savePath = await _libtorrentService.getTorrentSavePath(infoHash);
+      debugPrint('[SwarmView] getTorrentSavePath for $infoHash: $savePath');
+      if (savePath == null || savePath.isEmpty) return false;
+
+      final directory = Directory(savePath);
+      if (!await directory.exists()) return false;
+
+      // Recursively list files to find at least one file
+      await for (var entity in directory.list(recursive: true, followLinks: false)) {
+        if (entity is File) {
+          return true; // Found at least one file
+        }
+      }
+      return false; // No files found
+    } catch (e) {
+      debugPrint('[SwarmView] _isTorrentFilesPresent error: $e');
+      return false;
+    }
   }
 }

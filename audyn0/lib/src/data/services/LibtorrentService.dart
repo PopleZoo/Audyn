@@ -322,4 +322,14 @@ class LibtorrentService {
       return null;
     }
   }
+
+  Future<String?> getTorrentSavePath(String infoHash) async {
+    try {
+      final result = await _channel.invokeMethod<String>('getTorrentSavePath', infoHash);
+      return (result != null && result.isNotEmpty) ? result : null;
+    } catch (e) {
+      debugPrint('❌ Failed to get torrent save path: $e');
+      return null;
+    }
+  }
 }

@@ -150,6 +150,23 @@ class MainActivity : AudioServiceFragmentActivity() {
                     }
                 }
 
+                "getTorrentSavePath" -> {
+                    val infoHash = call.argument<String>("infoHash")
+                    if (infoHash.isNullOrEmpty()) {
+                        result.error("INVALID_ARGUMENT", "infoHash is required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val savePath = libtorrentWrapper.getTorrentSavePath(infoHash)
+                        if (savePath.isNullOrEmpty()) {
+                            result.success(null) // or result.error(...) if you want
+                        } else {
+                            result.success(savePath)
+                        }
+                    } catch (e: Exception) {
+                        result.error("ERROR", e.localizedMessage, null)
+                    }
+                }
                 else -> {
                     result.notImplemented()
                 }
