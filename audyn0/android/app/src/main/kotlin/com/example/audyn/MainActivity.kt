@@ -23,13 +23,18 @@ class MainActivity : AudioServiceFragmentActivity() {
                 }
 
                 "addTorrent" -> {
-                    val args = call.arguments as? Map<*, *>
-                    if (args == null) {
+                    val args = call.arguments
+                    android.util.Log.d("MethodChannel", "addTorrent args: $args, type: ${args?.javaClass}")
+
+                    if (args !is Map<*, *>) {
                         result.error("INVALID_ARGUMENT", "Expected map arguments", null)
                         return@setMethodCallHandler
                     }
+
                     val filePath = args["filePath"] as? String
                     val savePath = args["savePath"] as? String
+                    android.util.Log.d("MethodChannel", "filePath: $filePath, savePath: $savePath")
+
                     if (filePath.isNullOrEmpty() || savePath.isNullOrEmpty()) {
                         result.error("INVALID_ARGUMENT", "Missing or empty filePath or savePath", null)
                         return@setMethodCallHandler
@@ -37,10 +42,10 @@ class MainActivity : AudioServiceFragmentActivity() {
 
                     val seedMode = args["seedMode"] as? Boolean ?: false
                     val announce = args["announce"] as? Boolean ?: false
-                    val enableDHT = args["enableDHT"] as? Boolean ?: true
+                    val enableDHT = args["enableDHT"] as? Boolean ?: false
                     val enableLSD = args["enableLSD"] as? Boolean ?: true
                     val enableUTP = args["enableUTP"] as? Boolean ?: true
-                    val enableTrackers = args["enableTrackers"] as? Boolean ?: true
+                    val enableTrackers = args["enableTrackers"] as? Boolean ?: false
                     val enablePeerExchange = args["enablePeerExchange"] as? Boolean ?: true
 
                     try {
@@ -61,17 +66,18 @@ class MainActivity : AudioServiceFragmentActivity() {
                     }
                 }
 
+
                 "createTorrent" -> {
-                    val args = call.arguments as? Map<*, *>
-                    if (args == null) {
+                    val args = call.arguments
+                    if (args !is Map<*, *>) {
                         result.error("INVALID_ARGUMENT", "Expected map arguments", null)
                         return@setMethodCallHandler
                     }
 
                     val filePath = args["filePath"] as? String
                     val outputPath = args["outputPath"] as? String
-                    val trackersList = args["trackers"] as? List<String>
-                    val trackersArray = trackersList?.toTypedArray()
+                    val trackersList = args["trackers"] as? List<*>
+                    val trackersArray = trackersList?.filterIsInstance<String>()?.toTypedArray()
 
                     if (filePath.isNullOrEmpty() || outputPath.isNullOrEmpty()) {
                         result.error("INVALID_ARGUMENT", "Missing or empty filePath or outputPath", null)
@@ -96,8 +102,8 @@ class MainActivity : AudioServiceFragmentActivity() {
                 }
 
                 "getInfoHash" -> {
-                    val filePath = call.arguments as? String
-                    if (filePath.isNullOrEmpty()) {
+                    val filePath = call.arguments
+                    if (filePath !is String || filePath.isEmpty()) {
                         result.error("ARG_ERROR", "Expected non-empty filePath string", null)
                         return@setMethodCallHandler
                     }
@@ -114,8 +120,8 @@ class MainActivity : AudioServiceFragmentActivity() {
                 }
 
                 "getSwarmInfo" -> {
-                    val infoHash = call.arguments as? String
-                    if (infoHash.isNullOrEmpty()) {
+                    val infoHash = call.arguments
+                    if (infoHash !is String || infoHash.isEmpty()) {
                         result.error("ARG_ERROR", "Expected non-empty infoHash string", null)
                         return@setMethodCallHandler
                     }
@@ -128,7 +134,11 @@ class MainActivity : AudioServiceFragmentActivity() {
                 }
 
                 "removeTorrentByInfoHash" -> {
-                    val infoHash = call.argument<String>("infoHash")
+                    val infoHash = when (val args = call.arguments) {
+                        is String -> args
+                        is Map<*, *> -> args["infoHash"] as? String
+                        else -> null
+                    }
                     if (infoHash.isNullOrEmpty()) {
                         result.error("INVALID_ARGUMENT", "infoHash is required", null)
                         return@setMethodCallHandler
@@ -151,22 +161,29 @@ class MainActivity : AudioServiceFragmentActivity() {
                 }
 
                 "getTorrentSavePath" -> {
-                    val infoHash = call.argument<String>("infoHash")
+                    val rawArgs = call.arguments
+                    android.util.Log.d("MethodChannel", "getTorrentSavePath args: $rawArgs, type: ${rawArgs?.javaClass}")
+
+                    val infoHash: String? = when (rawArgs) {
+                        is String -> rawArgs
+                        is Map<*, *> -> rawArgs["infoHash"] as? String
+                        else -> null
+                    }
+
                     if (infoHash.isNullOrEmpty()) {
                         result.error("INVALID_ARGUMENT", "infoHash is required", null)
                         return@setMethodCallHandler
                     }
+
                     try {
                         val savePath = libtorrentWrapper.getTorrentSavePath(infoHash)
-                        if (savePath.isNullOrEmpty()) {
-                            result.success(null) // or result.error(...) if you want
-                        } else {
-                            result.success(savePath)
-                        }
+                        result.success(savePath.takeIf { !it.isNullOrEmpty() })
                     } catch (e: Exception) {
                         result.error("ERROR", e.localizedMessage, null)
                     }
                 }
+
+
                 else -> {
                     result.notImplemented()
                 }

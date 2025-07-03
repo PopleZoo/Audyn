@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../bloc/Downloads/DownloadsBloc.dart';
+import '../../native/libtorrent_wrapper.dart';
 
 class LibtorrentService {
   static const MethodChannel _channel = MethodChannel('libtorrent_wrapper');
@@ -131,6 +132,18 @@ class LibtorrentService {
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim()
         .toLowerCase();
+  }
+
+  Future<List<Map<String, dynamic>>> getAllTorrents() async {
+    try {
+      final jsonString = await _channel.invokeMethod<String>('getAllTorrents');
+      if (jsonString == null || jsonString.isEmpty) return [];
+      final List<dynamic> decoded = jsonDecode(jsonString);
+      return decoded.cast<Map<String, dynamic>>();
+    } catch (e) {
+      debugPrint('❌ Failed to get all torrents: $e');
+      return [];
+    }
   }
 
   Future<bool> _isSongValid(String title, String artist) async {
@@ -332,4 +345,43 @@ class LibtorrentService {
       return null;
     }
   }
+
+  static Future<Uint8List?> getTorrentFileByHash(String infoHash) async {
+    // For example, load the torrent file from your local torrents folder:
+    try {
+      final torrentsDir = await getApplicationDocumentsDirectory();
+      final path = p.join(torrentsDir.path, 'torrents', '$infoHash.torrent');
+      final file = File(path);
+      if (await file.exists()) {
+        return await file.readAsBytes();
+      } else {
+        debugPrint('[LibtorrentService] Torrent file not found for hash $infoHash at $path');
+        return null;
+      }
+    } catch (e) {
+      debugPrint('[LibtorrentService] Error reading torrent file for $infoHash: $e');
+      return null;
+    }
+  }
+
+  Future<bool> addTorrentFromBytes(Uint8List torrentBytes, {required String savePath}) async {
+    try {
+      final result = await LibtorrentWrapper.addTorrentFromBytes(
+        torrentBytes,
+        savePath: savePath,  // <-- Pass the required save path here
+        seedMode: true,      // Optional, adjust flags as needed
+        announce: false,
+        enableDHT: false,
+        enableLSD: true,
+        enableUTP: true,
+        enableTrackers: false,
+        enablePeerExchange: true,
+      );
+      return result == true;
+    } catch (e) {
+      debugPrint('[LibtorrentService] Failed to add torrent from bytes: $e');
+      return false;
+    }
+  }
+
 }

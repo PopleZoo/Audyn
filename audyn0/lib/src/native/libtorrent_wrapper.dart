@@ -36,6 +36,37 @@ class LibtorrentWrapper {
     }
   }
 
+  /// NEW: Adds a torrent from raw torrent file bytes directly.
+  /// This is useful when magnet links are unsupported.
+  static Future<bool> addTorrentFromBytes(Uint8List torrentBytes, {
+    required String savePath,
+    bool seedMode = false,
+    bool announce = false,
+    bool enableDHT = false,
+    bool enableLSD = true,
+    bool enableUTP = true,
+    bool enableTrackers = false,
+    bool enablePeerExchange = true,
+  }) async {
+    try {
+      final result = await _channel.invokeMethod<bool>('addTorrentFromBytes', {
+        'torrentBytes': torrentBytes,
+        'savePath': savePath,
+        'seedMode': seedMode,
+        'announce': announce,
+        'enableDHT': enableDHT,
+        'enableLSD': enableLSD,
+        'enableUTP': enableUTP,
+        'enableTrackers': enableTrackers,
+        'enablePeerExchange': enablePeerExchange,
+      });
+      return result == true;
+    } catch (e, stacktrace) {
+      debugPrint('[LibtorrentWrapper] addTorrentFromBytes error: $e\n$stacktrace');
+      return false;
+    }
+  }
+
   /// Returns libtorrent version string.
   static Future<String> getVersion() async {
     try {
@@ -116,8 +147,7 @@ class LibtorrentWrapper {
     }
   }
 
-  /// NEW: Get the save path (download folder) for a torrent by its infoHash.
-  /// Returns null if not found or error.
+  /// Get the save path (download folder) for a torrent by its infoHash.
   static Future<String?> getTorrentSavePath(String infoHash) async {
     try {
       final result = await _channel.invokeMethod<String>(

@@ -6,6 +6,7 @@ import 'package:flutter_media_metadata/flutter_media_metadata.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:on_audio_query/on_audio_query.dart';
+import '../../../src/data/services/LibtorrentService.dart';
 
 import '../src/data/services/LibtorrentService.dart';
 import '../src/native/libtorrent_wrapper.dart';
@@ -484,4 +485,45 @@ class MusicSeederService {
       return null;
     }
   }
+
+  Future<void> addTorrentByHash(String infoHash) async {
+    final LibtorrentService _libtorrentService = LibtorrentService();
+
+    if (infoHash.isEmpty) {
+      throw ArgumentError('InfoHash cannot be empty');
+    }
+
+    try {
+      // Fetch torrent metadata (torrent file bytes) from LibtorrentService static method
+      final Uint8List? torrentFileBytes = await LibtorrentService.getTorrentFileByHash(infoHash);
+
+      if (torrentFileBytes == null) {
+        throw Exception('No torrent file found for infoHash $infoHash');
+      }
+
+      // Get the path to the actual file for the torrent from your hashToPathMap or some local map
+      final String? savePath = _hashToPathMap[infoHash]; // Assuming this is accessible in your class
+
+      if (savePath == null || savePath.isEmpty) {
+        throw Exception('Save path not found for infoHash $infoHash');
+      }
+
+      // Add the torrent from bytes (not magnet link), specifying the save path where content exists
+      final bool success = await _libtorrentService.addTorrentFromBytes(
+        torrentFileBytes,
+        savePath: savePath,
+      );
+
+      if (!success) {
+        throw Exception('Failed to add torrent for infoHash $infoHash');
+      }
+
+      debugPrint('[Seeder] Successfully added torrent for infoHash $infoHash');
+    } catch (e) {
+      debugPrint('[Seeder] Error adding torrent for infoHash $infoHash: $e');
+      rethrow;
+    }
+  }
+
+
 }

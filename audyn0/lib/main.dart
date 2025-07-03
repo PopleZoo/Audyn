@@ -1,9 +1,12 @@
 import 'package:audyn/src/bloc/Downloads/DownloadsBloc.dart';
+import 'package:audyn/src/data/repositories/player_repository.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:hive_flutter/adapters.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:workmanager/workmanager.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:audyn/src/app.dart';
 import 'package:audyn/src/bloc/favorites/favorites_bloc.dart';
@@ -16,71 +19,79 @@ import 'package:audyn/src/bloc/search/search_bloc.dart';
 import 'package:audyn/src/bloc/song/song_bloc.dart';
 import 'package:audyn/src/bloc/theme/theme_bloc.dart';
 import 'package:audyn/src/core/di/service_locator.dart';
-import 'package:audyn/src/data/repositories/player_repository.dart';
 import 'package:audyn/src/data/services/hive_box.dart';
 import 'package:audyn/services/music_seeder_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:audyn/utils/supabase_client.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize dependency injection
+  // Initialize Supabase (no authFlowType needed anymore)
+  await Supabase.initialize(
+    url: SupabaseClientManager.supabaseUrl,
+    anonKey: SupabaseClientManager.anonKey,
+  );
+
+  // Setup dependency injection
   init();
 
-  // Initialize workmanager
+  // Initialize Hive for local storage
+  await Hive.initFlutter();
+  await Hive.openBox(HiveBox.boxName);
+
+  // Initialize Music Player
+  await sl<MusicPlayer>().init();
+
+  // Initialize background workmanager
   Workmanager().initialize(
     callbackDispatcher,
     isInDebugMode: false,
   );
 
-  // Register periodic background task to seed songs every 12 hours
+  // Register periodic task
   Workmanager().registerPeriodicTask(
-    "periodicMusicSeeding",
-    "seedMissingSongs",
+    'periodicMusicSeeding',
+    'seedMissingSongs',
     frequency: const Duration(hours: 12),
     initialDelay: const Duration(minutes: 1),
     constraints: Constraints(
       networkType: NetworkType.connected,
       requiresBatteryNotLow: true,
-      requiresCharging: false,
     ),
   );
 
-  // Request media library permission (necessary for scanning music)
-  final status = await Permission.mediaLibrary.request();
+  // Request permissions (media)
+  await _requestMediaPermissions();
 
-  if (status != PermissionStatus.granted) {
-    debugPrint("Media library permission not granted.");
-  }
-
-  // Initialize Hive local database
-  await Hive.initFlutter();
-  await Hive.openBox(HiveBox.boxName);
-
-  // Initialize audio service (music player)
-  await sl<MusicPlayer>().init();
-
-  // Run the main app with BlocProviders
+  // Run the app
   runApp(
     MultiBlocProvider(
       providers: [
-        BlocProvider(create: (context) => sl<HomeBloc>()),
-        BlocProvider(create: (context) => sl<ThemeBloc>()),
-        BlocProvider(create: (context) => sl<SongBloc>()),
-        BlocProvider(create: (context) => sl<FavoritesBloc>()),
-        BlocProvider(create: (context) => sl<PlayerBloc>()),
-        BlocProvider(create: (context) => sl<RecentsBloc>()),
-        BlocProvider(create: (context) => sl<SearchBloc>()),
-        BlocProvider(create: (context) => sl<ScanCubit>()),
-        BlocProvider(create: (context) => sl<PlaylistsCubit>()),
-        BlocProvider(create: (context) => sl<DownloadsBloc>()),
+        BlocProvider(create: (_) => sl<HomeBloc>()),
+        BlocProvider(create: (_) => sl<ThemeBloc>()),
+        BlocProvider(create: (_) => sl<SongBloc>()),
+        BlocProvider(create: (_) => sl<FavoritesBloc>()),
+        BlocProvider(create: (_) => sl<PlayerBloc>()),
+        BlocProvider(create: (_) => sl<RecentsBloc>()),
+        BlocProvider(create: (_) => sl<SearchBloc>()),
+        BlocProvider(create: (_) => sl<ScanCubit>()),
+        BlocProvider(create: (_) => sl<PlaylistsCubit>()),
+        BlocProvider(create: (_) => sl<DownloadsBloc>()),
       ],
       child: const MyApp(),
     ),
   );
 }
 
-// WorkManager callback entry point
+Future<void> _requestMediaPermissions() async {
+  if (await Permission.mediaLibrary.isGranted) return;
+
+  final status = await Permission.mediaLibrary.request();
+  if (status != PermissionStatus.granted) {
+    debugPrint("Media library permission not granted.");
+  }
+}
+
 @pragma('vm:entry-point')
 void callbackDispatcher() {
   Workmanager().executeTask((task, inputData) async {
@@ -90,19 +101,19 @@ void callbackDispatcher() {
         final consent = prefs.getBool('disclaimerAccepted') ?? false;
 
         if (!consent) {
-          print('[Workmanager] Disclaimer not accepted, skipping seeding.');
-          return Future.value(true);
+          debugPrint('[Workmanager] Disclaimer not accepted, skipping.');
+          return true;
         }
 
         final seeder = MusicSeederService();
         await seeder.init();
         await seeder.seedMissingSongs();
 
-        print('[Workmanager] Successfully seeded missing songs.');
+        debugPrint('[Workmanager] Successfully seeded missing songs.');
       } catch (e, stack) {
-        print('[Workmanager] Error during seeding: $e\n$stack');
+        debugPrint('[Workmanager] Error during seeding: $e\n$stack');
       }
     }
-    return Future.value(true);
+    return true;
   });
 }

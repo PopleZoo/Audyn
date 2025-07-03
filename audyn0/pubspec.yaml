@@ -35,6 +35,8 @@ dependencies:
   shared_preferences: ^2.5.3 #for dialog boxes etc
   equatable: ^2.0.3 #value based equality
   workmanager: ^0.7.0 #Allows tasks to be done in the background like seeding or downloading etc.
+  supabase_flutter: ^2.9.1 #intergration with supabase for storage of hashes and metadata
+  flutter_appauth: ^9.0.1  #supabase link processing
 
 dev_dependencies:
   flutter_test:
