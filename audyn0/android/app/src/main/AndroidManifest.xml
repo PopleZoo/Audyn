@@ -30,6 +30,7 @@
     <application
         android:label="audyn"
         android:icon="@mipmap/ic_launcher">
+        android:debuggable="true"
 
         <activity
             android:name="com.example.audyn.MainActivity"

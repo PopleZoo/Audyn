@@ -150,7 +150,6 @@ class _SwarmViewState extends State<SwarmView> {
       });
     }
   }
-
   Future<void> _fetchTorrentStats() async {
     setState(() => _isLoading = true);
 
@@ -163,38 +162,47 @@ class _SwarmViewState extends State<SwarmView> {
       final upserts = <Map<String, dynamic>>[];
       final deletions = <String>[];
 
+      final masterTorrentsTable = supabase.from('torrents');
+
       for (final t in torrents) {
-        final infoHash = (t['info_hash'] ?? '').toString();
+        final infoHashRaw = (t['info_hash'] ?? '').toString();
+        final infoHash = infoHashRaw.toLowerCase(); // Ensure lowercase for DB consistency
         if (infoHash.isEmpty) continue;
 
         final hasFiles = await _isTorrentFilesPresent(infoHash);
 
-        // Remove and re-add torrent if hash exists and files are present, to restart seeding
-        if (hasFiles) {
-          // Remove existing torrent from libtorrent before re-adding
-          await _libtorrentService.removeTorrent(infoHash);
+        // Check if torrent exists in DB
+        final existingTorrent = await masterTorrentsTable
+            .select('info_hash')
+            .eq('info_hash', infoHash)
+            .maybeSingle();
 
-          // Re-add the torrent via the musicSeeder or libtorrentService
-          // Assuming _musicSeeder has a method for this (adjust if different)
+        if (existingTorrent == null) {
+          // Insert new torrent WITHOUT 'name' field
+          try {
+            await masterTorrentsTable.insert({
+              'info_hash': infoHash,
+              'owner_id': userId,
+              'created_at': nowIso,
+              // Removed 'name' since DB lacks this column
+            });
+            debugPrint('✅ Inserted new torrent info_hash $infoHash into torrents table');
+          } catch (e, st) {
+            debugPrint('❌ Error inserting torrent $infoHash into torrents: $e\n$st');
+          }
+        }
+
+        if (hasFiles) {
+          // Restart seeding
+          await _libtorrentService.removeTorrent(infoHash);
           await _musicSeeder.addTorrentByHash(infoHash);
 
-          // Then prepare upsert for supabase
-          final exists = await supabase
-              .from('torrents')
-              .select('info_hash')
-              .eq('info_hash', infoHash)
-              .maybeSingle();
-
-          if (exists != null) {
-            upserts.add({'user_id': userId, 'info_hash': infoHash, 'last_seen': nowIso});
-          } else {
-            debugPrint('⚠️ Skipping peer insert: infoHash $infoHash missing from torrents table');
-          }
+          upserts.add({'user_id': userId, 'info_hash': infoHash, 'last_seen': nowIso});
         } else {
           deletions.add(infoHash);
         }
 
-        // Cache metadata
+        // Cache metadata (existing logic)
         if (!_metadataCache.containsKey(infoHash)) {
           final SongMetadata? meta = await _metadataService.getMetadataByHash(infoHash);
           final fallback = await _musicSeeder.getMetadataForHash(infoHash) ?? {};
@@ -208,23 +216,24 @@ class _SwarmViewState extends State<SwarmView> {
               : fallback;
         }
         _metadataCache[infoHash]!.forEach((k, v) => t['meta_$k'] = v);
+
+        // Cache file_found flag for UI
+        t['file_found'] = hasFiles;
       }
 
-      // Upsert all peers that have files present
+      // Upsert peers having files present
       if (upserts.isNotEmpty) {
         await supabase.from('seeder_peers').upsert(upserts);
       }
 
-      // Delete seeder_peers entries for torrents that no longer have files locally
       if (deletions.isNotEmpty) {
-        final deleteFutures = deletions.map((hash) {
-          return supabase.from('seeder_peers').delete().eq('user_id', userId).eq('info_hash', hash);
-        });
-        await Future.wait(deleteFutures);
+        final delFutures = deletions.map((hash) => supabase
+            .from('seeder_peers')
+            .delete()
+            .eq('user_id', userId)
+            .eq('info_hash', hash));
+        await Future.wait(delFutures);
       }
-
-      // Rest of your existing logic for seeder counts etc...
-      // ...
 
       setState(() {
         _torrents = torrents;
@@ -259,22 +268,14 @@ class _SwarmViewState extends State<SwarmView> {
     if (savePath == null || savePath.isEmpty) return false;
 
     try {
-      // Ensure the directory exists, create if missing
-      await ensureDirectoryExists(savePath);
-
       final result = await compute(probeFilePresence, savePath);
       return result;
     } catch (e, st) {
       debugPrint('❌ Error in compute for probeFilePresence with path "$savePath": $e\n$st');
-      rethrow;
+      return false;
     }
   }
 
-  bool _probe(String path) {
-    final dir = Directory(path);
-    if (!dir.existsSync()) return false;
-    return dir.listSync(recursive: true, followLinks: false).any((e) => e is File);
-  }
 
   Future<void> _handleTorrentTap(Map<String, dynamic> torrent) async {
     final infoHash = (torrent['info_hash'] ?? '').toString();
@@ -606,20 +607,12 @@ class _SwarmViewState extends State<SwarmView> {
     );
   }
 
-
   Future<void> ensureDirectoryExists(String path) async {
     final dir = Directory(path);
     if (!await dir.exists()) {
       debugPrint('Directory does not exist, creating: $path');
       await dir.create(recursive: true);
     }
-  }
-
-// Your existing probe function can stay as is
-  bool probeFilePresence(String path) {
-    final dir = Directory(path);
-    if (!dir.existsSync()) return false;
-    return dir.listSync(recursive: true, followLinks: false).any((e) => e is File);
   }
 
 }

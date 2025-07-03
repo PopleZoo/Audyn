@@ -101,42 +101,44 @@ std::string get_info_hash(const std::string& torrent_path) {
 
 lt::session& get_session() {
     std::lock_guard<std::mutex> lock(session_mutex);
+
     if (!global_session) {
         lt::settings_pack pack;
 
-        // Logging alerts
+        // Enable full alert logging for diagnostics
         pack.set_int(lt::settings_pack::alert_mask, lt::alert::all_categories);
 
-        // Enable only UTP, disable TCP (if desired)
+        // Enable only uTP (disable TCP)
         pack.set_bool(lt::settings_pack::enable_outgoing_utp, true);
         pack.set_bool(lt::settings_pack::enable_incoming_utp, true);
         pack.set_bool(lt::settings_pack::enable_outgoing_tcp, false);
         pack.set_bool(lt::settings_pack::enable_incoming_tcp, false);
 
-        // Disable external discovery and port mappings
+        // Disable all external network discovery/mapping
         pack.set_bool(lt::settings_pack::enable_dht, false);
         pack.set_bool(lt::settings_pack::enable_lsd, false);
         pack.set_bool(lt::settings_pack::enable_upnp, false);
         pack.set_bool(lt::settings_pack::enable_natpmp, false);
 
-        // Use env var for port or default 6881
-        const char* port_env = std::getenv("LIBTORRENT_LISTEN_PORT");
+        // Get port from environment variable or default to 6881
         int port = 6881;
-        if (port_env) {
+        if (const char* port_env = std::getenv("LIBTORRENT_LISTEN_PORT")) {
             try {
                 port = std::stoi(port_env);
             } catch (...) {
-                LOGE("[Native] Invalid LIBTORRENT_LISTEN_PORT value, using default 6881");
+                LOGE("[Native] Invalid LIBTORRENT_LISTEN_PORT value. Falling back to 6881.");
             }
         }
 
+        // Bind to all interfaces
         std::string listen_if = "0.0.0.0:" + std::to_string(port);
         pack.set_str(lt::settings_pack::listen_interfaces, listen_if);
         pack.set_int(lt::settings_pack::max_retry_port_bind, 10);
 
         global_session = std::make_unique<lt::session>(pack);
-        LOGI("[Native] Libtorrent session initialized on %s", listen_if.c_str());
+        LOGI("[Native] Libtorrent session initialized (uTP only) on %s", listen_if.c_str());
     }
+
     return *global_session;
 }
 
