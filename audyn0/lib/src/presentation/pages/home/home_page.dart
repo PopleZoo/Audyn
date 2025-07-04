@@ -7,8 +7,6 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:supabase_flutter/supabase_flutter.dart' hide Provider;
-import 'package:supabase_flutter/supabase_flutter.dart' show Supabase, OAuthProvider;
 import 'package:flutter_appauth/flutter_appauth.dart';
 
 import 'package:audyn/src/bloc/theme/theme_bloc.dart';
@@ -35,7 +33,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   bool _hasPermission = false;
   final scaffoldKey = GlobalKey<ScaffoldState>();
 
-  late final StreamSubscription<AuthState> _authSub;
 
   final tabs = ['Songs', 'Playlists', 'Swarm', 'Downloads'];
 
@@ -44,20 +41,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     super.initState();
     checkAndRequestPermissions();
     _tabController = TabController(length: tabs.length, vsync: this);
-
-    // Listen for auth state changes and update UI accordingly
-    _authSub = Supabase.instance.client.auth.onAuthStateChange.listen((data) {
-      final event = data.event;
-      debugPrint('Auth event: $event');
-      setState(() {
-        // Rebuild UI on sign in or sign out
-      });
-    });
   }
 
   @override
   void dispose() {
-    _authSub.cancel();
     _tabController.dispose();
     super.dispose();
   }
@@ -72,80 +59,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     }
   }
 
-  Widget _buildLoginBubble() {
-    final user = Supabase.instance.client.auth.currentUser;
-
-    if (user == null) {
-      return TextButton(
-        onPressed: () async {
-          final success = await Navigator.of(context).push<bool>(
-            MaterialPageRoute(builder: (_) => const LoginPage()),
-          );
-          if (success == true) {
-            setState(() {});
-          }
-        },
-        child: const Icon(Icons.person, color: Colors.white),
-      );
-    } else {
-      return PopupMenuButton<String>(
-        tooltip: 'Account',
-        icon: CircleAvatar(
-          backgroundColor: Colors.blueGrey,
-          backgroundImage: user.userMetadata?['avatar_url'] != null
-              ? NetworkImage(user.userMetadata!['avatar_url'])
-              : null,
-          child: user.userMetadata?['avatar_url'] == null
-              ? Text(
-            (user.email ?? "?").substring(0, 1).toUpperCase(),
-            style: const TextStyle(color: Colors.white),
-          )
-              : null,
-        ),
-        onSelected: (value) async {
-          switch (value) {
-            case 'logout':
-              await Supabase.instance.client.auth.signOut();
-              setState(() {});
-              break;
-            case 'removeSeeder':
-              await _removeSelfAsSeeder();
-              break;
-            case 'takeDownTorrents':
-              await _takeDownOwnTorrents();
-              break;
-          }
-        },
-        itemBuilder: (context) => [
-          const PopupMenuItem(
-            value: 'removeSeeder',
-            child: Text('Remove Self as Seeder'),
-          ),
-          const PopupMenuItem(
-            value: 'takeDownTorrents',
-            child: Text('Take Down Own Torrents'),
-          ),
-          const PopupMenuDivider(),
-          PopupMenuItem(
-            value: 'logout',
-            child: Text('Logout (${user.email ?? "user"})'),
-          ),
-        ],
-      );
-    }
-  }
-
-  Future<void> _removeSelfAsSeeder() async {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("You have been removed as a seeder.")),
-    );
-  }
-
-  Future<void> _takeDownOwnTorrents() async {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Your torrents have been taken down.")),
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -224,9 +137,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         tooltip: 'Menu',
         onPressed: () => scaffoldKey.currentState?.openDrawer(),
       ),
-      actions: [
-        _buildLoginBubble(),
-      ],
     );
   }
 
@@ -286,123 +196,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             },
           ),
         ],
-      ),
-    );
-  }
-}
-
-
-class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
-
-  @override
-  State<LoginPage> createState() => _LoginPageState();
-}
-
-class _LoginPageState extends State<LoginPage> {
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
-  bool _isLoading = false;
-  String? _error;
-
-  Future<void> _loginWithEmail() async {
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
-    try {
-      final res = await Supabase.instance.client.auth.signInWithPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
-      );
-      if (res.user != null) {
-        Navigator.of(context).pop(true);
-      } else {
-        setState(() {
-          _error = 'Login failed: User not found or wrong password.';
-        });
-      }
-    } catch (e) {
-      setState(() {
-        _error = e.toString();
-      });
-    } finally {
-      setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _signUpWithEmail() async {
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
-    try {
-      final res = await Supabase.instance.client.auth.signUp(
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
-      );
-      if (res.user != null) {
-        setState(() {
-          _error = 'Sign up successful. Please check your email to confirm.';
-        });
-      } else {
-        setState(() {
-          _error = 'Sign up failed.';
-        });
-      }
-    } catch (e) {
-      setState(() {
-        _error = e.toString();
-      });
-    } finally {
-      setState(() => _isLoading = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Login / Sign Up')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            if (_error != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 16),
-                child: Text(_error!, style: const TextStyle(color: Colors.red)),
-              ),
-            TextField(
-              controller: _emailController,
-              decoration: const InputDecoration(labelText: 'Email'),
-              keyboardType: TextInputType.emailAddress,
-              autofillHints: const [AutofillHints.email],
-            ),
-            TextField(
-              controller: _passwordController,
-              decoration: const InputDecoration(labelText: 'Password'),
-              obscureText: true,
-              autofillHints: const [AutofillHints.password],
-            ),
-            const SizedBox(height: 20),
-            if (_isLoading)
-              const CircularProgressIndicator()
-            else
-              Column(
-                children: [
-                  ElevatedButton(
-                    onPressed: _loginWithEmail,
-                    child: const Text('Login with Email'),
-                  ),
-                  const SizedBox(height: 10),
-                  ElevatedButton(
-                    onPressed: _signUpWithEmail,
-                    child: const Text('Sign Up with Email'),
-                  ),
-                ],
-              ),
-          ],
-        ),
       ),
     );
   }

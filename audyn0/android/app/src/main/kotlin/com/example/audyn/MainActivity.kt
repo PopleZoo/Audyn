@@ -182,6 +182,31 @@ class MainActivity : AudioServiceFragmentActivity() {
                         result.error("ERROR", e.localizedMessage, null)
                     }
                 }
+                "getAllTorrents" -> {
+                    try {
+                        val torrentsJson = libtorrentWrapper.getAllTorrents()  // This must return a JSON string of torrents
+                        result.success(torrentsJson)
+                    } catch (e: Exception) {
+                        result.error("ERROR", e.localizedMessage, null)
+                    }
+                }
+                "dht_putEncrypted" -> {
+                    try {
+                        val args = call.arguments as? Map<*, *> ?: throw IllegalArgumentException("Expected Map arguments")
+                        val key = args["key"] as? String ?: throw IllegalArgumentException("Missing key")
+                        val payload = args["payload"] as? ByteArray ?: throw IllegalArgumentException("Payload is not ByteArray")
+
+                        val success = libtorrentWrapper.dhtPutEncrypted(key, payload)
+                        if (success) {
+                            result.success(true)
+                        } else {
+                            result.error("DHT_PUT_FAIL", "Native DHT put operation failed", null)
+                        }
+                    } catch (e: Exception) {
+                        result.error("DHT_PUT_ERROR", e.message, null)
+                    }
+                }
+
 
 
                 else -> {

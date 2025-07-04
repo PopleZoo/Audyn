@@ -26,6 +26,8 @@ class LibtorrentWrapper {
         enablePeerExchange: Boolean
     ): Boolean
 
+    external fun getAllTorrents(): String
+
     /** Creates a torrent from [filePath], outputs to [outputPath], with optional [trackers]. */
     external fun createTorrent(
         filePath: String,
@@ -47,4 +49,8 @@ class LibtorrentWrapper {
 
     /** Returns the save path for the torrent identified by [infoHash], or null if not found. */
     external fun getTorrentSavePath(infoHash: String): String?
+
+    external fun dhtPutEncrypted(key: String, payload: ByteArray): Boolean
+
+
 }

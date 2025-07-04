@@ -21,16 +21,9 @@ import 'package:audyn/src/bloc/theme/theme_bloc.dart';
 import 'package:audyn/src/core/di/service_locator.dart';
 import 'package:audyn/src/data/services/hive_box.dart';
 import 'package:audyn/services/music_seeder_service.dart';
-import 'package:audyn/utils/supabase_client.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Initialize Supabase (no authFlowType needed anymore)
-  await Supabase.initialize(
-    url: SupabaseClientManager.supabaseUrl,
-    anonKey: SupabaseClientManager.anonKey,
-  );
 
   // Setup dependency injection
   init();
