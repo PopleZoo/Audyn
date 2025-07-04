@@ -26,6 +26,7 @@ class LibtorrentWrapper {
         enablePeerExchange: Boolean
     ): Boolean
 
+    /** Returns all active torrents info as a JSON string. */
     external fun getAllTorrents(): String
 
     /** Creates a torrent from [filePath], outputs to [outputPath], with optional [trackers]. */
@@ -34,6 +35,8 @@ class LibtorrentWrapper {
         outputPath: String,
         trackers: Array<String>?
     ): Boolean
+
+    external fun removeTorrentByName(torrentName: String): Boolean
 
     /** Returns torrent statistics as JSON string. */
     external fun getTorrentStats(): String
@@ -50,7 +53,6 @@ class LibtorrentWrapper {
     /** Returns the save path for the torrent identified by [infoHash], or null if not found. */
     external fun getTorrentSavePath(infoHash: String): String?
 
+    /** Performs a DHT encrypted put with the given key and payload, returns true if success. */
     external fun dhtPutEncrypted(key: String, payload: ByteArray): Boolean
-
-
 }

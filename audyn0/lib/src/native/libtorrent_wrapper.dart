@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 
@@ -37,7 +38,6 @@ class LibtorrentWrapper {
   }
 
   /// NEW: Adds a torrent from raw torrent file bytes directly.
-  /// This is useful when magnet links are unsupported.
   static Future<bool> addTorrentFromBytes(Uint8List torrentBytes, {
     required String savePath,
     bool seedMode = false,
@@ -79,7 +79,6 @@ class LibtorrentWrapper {
   }
 
   /// Creates a .torrent file from a given file path.
-  /// For Audyn, this should be run without trackers to enforce hash determinism.
   static Future<bool> createTorrent(
       String path,
       String torrentFilePath, {
@@ -101,6 +100,7 @@ class LibtorrentWrapper {
   }
 
   /// Extracts the infoHash from a .torrent file.
+  /// Consider removing if no longer used.
   static Future<String?> getInfoHash(String torrentPath) async {
     try {
       final result = await _channel.invokeMethod<String>('getInfoHash', torrentPath);
@@ -123,6 +123,7 @@ class LibtorrentWrapper {
   }
 
   /// Retrieves swarm info for a given infoHash (if supported).
+  /// Consider removing or replacing if infoHash no longer used.
   static Future<String?> getSwarmInfo(String infoHash) async {
     try {
       final result = await _channel.invokeMethod<String>('getSwarmInfo', infoHash);
@@ -134,6 +135,7 @@ class LibtorrentWrapper {
   }
 
   /// Removes a torrent from the session by its infoHash.
+  /// You may remove this if no longer using infoHash.
   static Future<bool> removeTorrentByInfoHash(String infoHash) async {
     try {
       final result = await _channel.invokeMethod<bool>(
@@ -148,6 +150,7 @@ class LibtorrentWrapper {
   }
 
   /// Get the save path (download folder) for a torrent by its infoHash.
+  /// Consider removing or adapting this method if infoHash is dropped.
   static Future<String?> getTorrentSavePath(String infoHash) async {
     try {
       final result = await _channel.invokeMethod<String>(
@@ -158,6 +161,21 @@ class LibtorrentWrapper {
     } catch (e, stacktrace) {
       debugPrint('[LibtorrentWrapper] getTorrentSavePath error: $e\n$stacktrace');
       return null;
+    }
+  }
+
+  /// Removes a torrent by its torrent name instead of infoHash.
+  /// This requires native-side support for removing torrents by name.
+  static Future<bool> removeTorrentByName(String torrentName) async {
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'removeTorrentByName',
+        {'torrentName': torrentName},
+      );
+      return result == true;
+    } catch (e, stacktrace) {
+      debugPrint('[LibtorrentWrapper] removeTorrentByName error: $e\n$stacktrace');
+      return false;
     }
   }
 }

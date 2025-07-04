@@ -10,11 +10,11 @@ import 'package:path_provider/path_provider.dart';
 import '../../../utils/CryptoHelper.dart';
 
 /// ************************************************************
-/// 🌐 2. LIBTORRENT SERVICE (WITH ENCRYPTED DHT SUPPORT)
+/// 🌐 2. LIBTORRENT SERVICE (WITH ENCRYPTED DHT SUPPORT REMOVED INFOHASH USAGE)
 /// ************************************************************
 class LibtorrentService {
   static const _ch = MethodChannel('libtorrent_wrapper');
-  static const _prefix = 'audynapp:'; // DHT key prefix
+  static const _prefix = 'audynapp:'; // DHT key prefix (still kept but no infoHash)
   static const Duration _broadcastInterval = Duration(minutes: 1);
 
   Timer? _broadcastTimer;
@@ -30,17 +30,26 @@ class LibtorrentService {
   Future<void> cleanupSession() async =>
       _ch.invokeMethod('cleanupSession');
 
-  Future<bool> removeTorrent(String infoHash) async =>
-      (await _ch.invokeMethod('removeTorrentByInfoHash', {'infoHash': infoHash})) == true;
+  /// Removed infoHash param: delete torrent by name instead
+  Future<bool> removeTorrentByName(String torrentName) async {
+    try {
+      final success = await _ch.invokeMethod('removeTorrentByName', {'name': torrentName});
+      return success == true;
+    } catch (e) {
+      debugPrint('[removeTorrentByName] error: $e');
+      return false;
+    }
+  }
 
   Future<String> getTorrentStats() async =>
       (await _ch.invokeMethod<String>('getTorrentStats')) ?? '[]';
 
-  Future<String?> getTorrentSavePath(String infoHash) async =>
-      await _ch.invokeMethod<String>('getTorrentSavePath', infoHash);
+  /// Removed infoHash param
+  Future<String?> getTorrentSavePathByName(String torrentName) async =>
+      await _ch.invokeMethod<String>('getTorrentSavePathByName', {'name': torrentName});
 
-  /// Create a torrent and seed it, returning its infoHash
-  Future<String?> createTorrentAndGetHash(String filePath) async {
+  /// Create a torrent and seed it, returning its name instead of infoHash
+  Future<String?> createTorrentAndGetName(String filePath) async {
     final tmp = await getTemporaryDirectory();
     final torrentPath = p.join(tmp.path, '${p.basenameWithoutExtension(filePath)}.torrent');
 
@@ -51,25 +60,20 @@ class LibtorrentService {
 
     if (ok != true) return null;
 
-    final infoHash = await _ch.invokeMethod<String>('getInfoHashFromFile', torrentPath);
-    if (infoHash == null) return null;
+    final torrentName = p.basename(filePath);
 
-    await addTorrent(torrentPath, p.dirname(filePath), seedMode: true, enableDHT: true);
+    await addTorrent(torrentPath, p.dirname(filePath), seedMode: true, enableDHT: false);
 
-    // Publish presence in DHT
-    await putEncryptedSwarmData(infoHash, {
-      'infoHash': infoHash,
-      'name': p.basename(filePath),
-      'ts': DateTime.now().toIso8601String(),
-    });
+    // NOTE: Removed DHT encryption broadcast since no infoHash, or
+    // you may implement your own unique key system based on name if needed
 
-    return infoHash;
+    return torrentName;
   }
 
   Future<bool> addTorrent(String filePath, String savePath,
       {bool seedMode = true,
         bool announce = false,
-        bool enableDHT = true,
+        bool enableDHT = false, // Disabled due to no infoHash
         bool enableLSD = true,
         bool enableUTP = true,
         bool enableTrackers = false,
@@ -93,55 +97,42 @@ class LibtorrentService {
     }
   }
 
-  /// Publish encrypted swarm data to DHT
-  Future<void> putEncryptedSwarmData(String infoHash, Map<String, dynamic> data) async {
-    final key = '$_prefix$infoHash';
-    final encryptedPayload = CryptoHelper.encryptJson(data);
-    try {
-      await _ch.invokeMethod('dht_putEncrypted', {
-        'key': key,
-        'payload': encryptedPayload,
-      });
-    } catch (e, st) {
-      debugPrint('[putEncryptedSwarmData] error: $e\n$st');
-    }
-  }
+  /// Removed encrypted swarm data methods since no infoHash key available.
+  /// You may want to implement a different system based on torrentName.
 
-  /// Retrieve encrypted swarm data from DHT
-  Future<Map<String, dynamic>?> getEncryptedSwarmData(String infoHash) async {
-    final key = '$_prefix$infoHash';
-    try {
-      final bytes = await _ch.invokeMethod<Uint8List>('dht_get', key);
-      if (bytes == null) return null;
-      return CryptoHelper.decryptJson(bytes);
-    } catch (e, st) {
-      debugPrint('[getEncryptedSwarmData] error: $e\n$st');
-      return null;
-    }
-  }
-
-  /// Get peer list from encrypted swarm object
-  Future<List<dynamic>> getPeersForTorrent(String infoHash) async {
-    final swarm = await getEncryptedSwarmData(infoHash);
-    return swarm?['peers'] as List<dynamic>? ?? [];
-  }
-
-  /// Publish all local torrents into DHT periodically
+  /// Broadcast all local torrents periodically into DHT (disabled DHT usage)
   Future<void> broadcastLocalSwarmData() async {
     try {
       final raw = await _ch.invokeMethod<String>('getAllTorrents');
       if (raw == null || raw.isEmpty) return;
 
-      final torrents = (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
-      for (final t in torrents) {
-        final infoHash = (t['info_hash'] ?? '').toString();
-        if (infoHash.isEmpty) continue;
+      final decoded = jsonDecode(raw);
 
-        await putEncryptedSwarmData(infoHash, {
-          'infoHash': infoHash,
-          'name': t['name'],
-          'ts': DateTime.now().toIso8601String(),
-        });
+      List<Map<String, dynamic>> torrents = [];
+
+      if (decoded is Map<String, dynamic> && decoded.containsKey('torrents')) {
+        final torrentList = decoded['torrents'];
+        if (torrentList is List) {
+          torrents = torrentList.whereType<Map<String, dynamic>>().toList();
+        } else if (torrentList is Map<String, dynamic>) {
+          torrents = [torrentList];
+        } else {
+          debugPrint('[broadcastLocalSwarmData] Unexpected torrents format: ${torrentList.runtimeType}');
+          return;
+        }
+      } else if (decoded is List) {
+        torrents = decoded.whereType<Map<String, dynamic>>().toList();
+      } else {
+        debugPrint('[broadcastLocalSwarmData] Unexpected JSON type: ${decoded.runtimeType}');
+        return;
+      }
+
+      for (final t in torrents) {
+        final torrentName = (t['name'] ?? '').toString();
+        if (torrentName.isEmpty) continue;
+
+        // No DHT broadcast due to missing infoHash encryption
+        // If you want, implement broadcast by name key here
       }
     } catch (e, st) {
       debugPrint('[broadcastLocalSwarmData] error: $e\n$st');
@@ -150,5 +141,30 @@ class LibtorrentService {
 
   void dispose() {
     _broadcastTimer?.cancel();
+  }
+
+  Future<List<Map<String, dynamic>>> getAllTorrents() async {
+    try {
+      final raw = await _ch.invokeMethod<String>('getAllTorrents');
+      if (raw == null || raw.isEmpty) return [];
+
+      final decoded = jsonDecode(raw);
+
+      if (decoded is List) {
+        return decoded.whereType<Map<String, dynamic>>().toList();
+      }
+
+      if (decoded is Map<String, dynamic> && decoded.containsKey('torrents')) {
+        final torrents = decoded['torrents'];
+        if (torrents is List) {
+          return torrents.whereType<Map<String, dynamic>>().toList();
+        }
+      }
+
+      return [];
+    } catch (e, st) {
+      debugPrint('[getAllTorrents] error: $e\n$st');
+      return [];
+    }
   }
 }

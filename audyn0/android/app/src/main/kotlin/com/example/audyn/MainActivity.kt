@@ -24,8 +24,6 @@ class MainActivity : AudioServiceFragmentActivity() {
 
                 "addTorrent" -> {
                     val args = call.arguments
-                    android.util.Log.d("MethodChannel", "addTorrent args: $args, type: ${args?.javaClass}")
-
                     if (args !is Map<*, *>) {
                         result.error("INVALID_ARGUMENT", "Expected map arguments", null)
                         return@setMethodCallHandler
@@ -33,7 +31,6 @@ class MainActivity : AudioServiceFragmentActivity() {
 
                     val filePath = args["filePath"] as? String
                     val savePath = args["savePath"] as? String
-                    android.util.Log.d("MethodChannel", "filePath: $filePath, savePath: $savePath")
 
                     if (filePath.isNullOrEmpty() || savePath.isNullOrEmpty()) {
                         result.error("INVALID_ARGUMENT", "Missing or empty filePath or savePath", null)
@@ -65,7 +62,6 @@ class MainActivity : AudioServiceFragmentActivity() {
                         result.error("ERROR", e.localizedMessage, null)
                     }
                 }
-
 
                 "createTorrent" -> {
                     val args = call.arguments
@@ -151,6 +147,24 @@ class MainActivity : AudioServiceFragmentActivity() {
                     }
                 }
 
+                "removeTorrentByName" -> {
+                    val torrentName = when (val args = call.arguments) {
+                        is String -> args
+                        is Map<*, *> -> args["torrentName"] as? String
+                        else -> null
+                    }
+                    if (torrentName.isNullOrEmpty()) {
+                        result.error("INVALID_ARGUMENT", "torrentName is required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val success = libtorrentWrapper.removeTorrentByName(torrentName)
+                        result.success(success)
+                    } catch (e: Exception) {
+                        result.error("ERROR", e.localizedMessage, null)
+                    }
+                }
+
                 "cleanupSession" -> {
                     try {
                         libtorrentWrapper.cleanupSession()
@@ -162,19 +176,15 @@ class MainActivity : AudioServiceFragmentActivity() {
 
                 "getTorrentSavePath" -> {
                     val rawArgs = call.arguments
-                    android.util.Log.d("MethodChannel", "getTorrentSavePath args: $rawArgs, type: ${rawArgs?.javaClass}")
-
                     val infoHash: String? = when (rawArgs) {
                         is String -> rawArgs
                         is Map<*, *> -> rawArgs["infoHash"] as? String
                         else -> null
                     }
-
                     if (infoHash.isNullOrEmpty()) {
                         result.error("INVALID_ARGUMENT", "infoHash is required", null)
                         return@setMethodCallHandler
                     }
-
                     try {
                         val savePath = libtorrentWrapper.getTorrentSavePath(infoHash)
                         result.success(savePath.takeIf { !it.isNullOrEmpty() })
@@ -182,14 +192,16 @@ class MainActivity : AudioServiceFragmentActivity() {
                         result.error("ERROR", e.localizedMessage, null)
                     }
                 }
+
                 "getAllTorrents" -> {
                     try {
-                        val torrentsJson = libtorrentWrapper.getAllTorrents()  // This must return a JSON string of torrents
+                        val torrentsJson = libtorrentWrapper.getAllTorrents()
                         result.success(torrentsJson)
                     } catch (e: Exception) {
                         result.error("ERROR", e.localizedMessage, null)
                     }
                 }
+
                 "dht_putEncrypted" -> {
                     try {
                         val args = call.arguments as? Map<*, *> ?: throw IllegalArgumentException("Expected Map arguments")
@@ -206,8 +218,6 @@ class MainActivity : AudioServiceFragmentActivity() {
                         result.error("DHT_PUT_ERROR", e.message, null)
                     }
                 }
-
-
 
                 else -> {
                     result.notImplemented()
