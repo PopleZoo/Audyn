@@ -1,79 +1,31 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
-import '../../../utils/CryptoHelper.dart';
+/// ************************************************************
+/// 🌐 LIBTORRENT SERVICE (NO INFO_HASH, USE TORRENT NAME INSTEAD)
+/// ************************************************************
 
-/// ************************************************************
-/// 🌐 2. LIBTORRENT SERVICE (WITH ENCRYPTED DHT SUPPORT REMOVED INFOHASH USAGE)
-/// ************************************************************
 class LibtorrentService {
   static const _ch = MethodChannel('libtorrent_wrapper');
-  static const _prefix = 'audynapp:'; // DHT key prefix (still kept but no infoHash)
-  static const Duration _broadcastInterval = Duration(minutes: 1);
 
-  Timer? _broadcastTimer;
-
-  LibtorrentService() {
-    _broadcastTimer = Timer.periodic(_broadcastInterval, (_) => broadcastLocalSwarmData());
-  }
-
-  /// Basic interop calls
+  /// Get libtorrent version
   Future<String> getVersion() async =>
       (await _ch.invokeMethod<String>('getVersion')) ?? 'unknown';
 
+  /// Cleanup session
   Future<void> cleanupSession() async =>
-      _ch.invokeMethod('cleanupSession');
+      await _ch.invokeMethod('cleanupSession');
 
-  /// Removed infoHash param: delete torrent by name instead
-  Future<bool> removeTorrentByName(String torrentName) async {
-    try {
-      final success = await _ch.invokeMethod('removeTorrentByName', {'name': torrentName});
-      return success == true;
-    } catch (e) {
-      debugPrint('[removeTorrentByName] error: $e');
-      return false;
-    }
-  }
-
-  Future<String> getTorrentStats() async =>
-      (await _ch.invokeMethod<String>('getTorrentStats')) ?? '[]';
-
-  /// Removed infoHash param
-  Future<String?> getTorrentSavePathByName(String torrentName) async =>
-      await _ch.invokeMethod<String>('getTorrentSavePathByName', {'name': torrentName});
-
-  /// Create a torrent and seed it, returning its name instead of infoHash
-  Future<String?> createTorrentAndGetName(String filePath) async {
-    final tmp = await getTemporaryDirectory();
-    final torrentPath = p.join(tmp.path, '${p.basenameWithoutExtension(filePath)}.torrent');
-
-    final ok = await _ch.invokeMethod('createTorrent', {
-      'filePath': filePath,
-      'outputPath': torrentPath,
-    });
-
-    if (ok != true) return null;
-
-    final torrentName = p.basename(filePath);
-
-    await addTorrent(torrentPath, p.dirname(filePath), seedMode: true, enableDHT: false);
-
-    // NOTE: Removed DHT encryption broadcast since no infoHash, or
-    // you may implement your own unique key system based on name if needed
-
-    return torrentName;
-  }
-
+  /// Add torrent by file path and save path
   Future<bool> addTorrent(String filePath, String savePath,
       {bool seedMode = true,
         bool announce = false,
-        bool enableDHT = false, // Disabled due to no infoHash
+        bool enableDHT = false,
         bool enableLSD = true,
         bool enableUTP = true,
         bool enableTrackers = false,
@@ -97,52 +49,27 @@ class LibtorrentService {
     }
   }
 
-  /// Removed encrypted swarm data methods since no infoHash key available.
-  /// You may want to implement a different system based on torrentName.
+  /// Create a torrent file and seed it; returns torrent name
+  Future<String?> createTorrentAndGetName(String filePath) async {
+    final tmpDir = await getTemporaryDirectory();
+    final torrentPath = p.join(tmpDir.path, '${p.basenameWithoutExtension(filePath)}.torrent');
 
-  /// Broadcast all local torrents periodically into DHT (disabled DHT usage)
-  Future<void> broadcastLocalSwarmData() async {
-    try {
-      final raw = await _ch.invokeMethod<String>('getAllTorrents');
-      if (raw == null || raw.isEmpty) return;
+    final success = await _ch.invokeMethod('createTorrent', {
+      'filePath': filePath,
+      'outputPath': torrentPath,
+    });
 
-      final decoded = jsonDecode(raw);
+    if (success != true) return null;
 
-      List<Map<String, dynamic>> torrents = [];
+    final torrentName = p.basename(filePath);
 
-      if (decoded is Map<String, dynamic> && decoded.containsKey('torrents')) {
-        final torrentList = decoded['torrents'];
-        if (torrentList is List) {
-          torrents = torrentList.whereType<Map<String, dynamic>>().toList();
-        } else if (torrentList is Map<String, dynamic>) {
-          torrents = [torrentList];
-        } else {
-          debugPrint('[broadcastLocalSwarmData] Unexpected torrents format: ${torrentList.runtimeType}');
-          return;
-        }
-      } else if (decoded is List) {
-        torrents = decoded.whereType<Map<String, dynamic>>().toList();
-      } else {
-        debugPrint('[broadcastLocalSwarmData] Unexpected JSON type: ${decoded.runtimeType}');
-        return;
-      }
+    // Add torrent (seed mode), DHT disabled for encrypted usage
+    await addTorrent(torrentPath, p.dirname(filePath), seedMode: true, enableDHT: false);
 
-      for (final t in torrents) {
-        final torrentName = (t['name'] ?? '').toString();
-        if (torrentName.isEmpty) continue;
-
-        // No DHT broadcast due to missing infoHash encryption
-        // If you want, implement broadcast by name key here
-      }
-    } catch (e, st) {
-      debugPrint('[broadcastLocalSwarmData] error: $e\n$st');
-    }
+    return torrentName;
   }
 
-  void dispose() {
-    _broadcastTimer?.cancel();
-  }
-
+  /// Get all torrents as JSON-decoded list
   Future<List<Map<String, dynamic>>> getAllTorrents() async {
     try {
       final raw = await _ch.invokeMethod<String>('getAllTorrents');
@@ -165,6 +92,28 @@ class LibtorrentService {
     } catch (e, st) {
       debugPrint('[getAllTorrents] error: $e\n$st');
       return [];
+    }
+  }
+
+  /// Remove torrent by name
+  Future<bool> removeTorrentByName(String torrentName) async {
+    try {
+      final result = await _ch.invokeMethod('removeTorrentByName', {'torrentName': torrentName});
+      return result == true;
+    } catch (e) {
+      debugPrint('[removeTorrentByName] error: $e');
+      return false;
+    }
+  }
+
+  /// Get save path of a torrent by name
+  Future<String?> getTorrentSavePathByName(String torrentName) async {
+    try {
+      final res = await _ch.invokeMethod<String>('getTorrentSavePathByName', {'torrentName': torrentName});
+      return res;
+    } catch (e) {
+      debugPrint('[getTorrentSavePathByName] error: $e');
+      return null;
     }
   }
 }

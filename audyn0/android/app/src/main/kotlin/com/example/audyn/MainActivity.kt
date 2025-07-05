@@ -1,22 +1,59 @@
 package com.example.audyn
 
+import android.content.Context
 import com.ryanheise.audioservice.AudioServiceFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : AudioServiceFragmentActivity() {
     private val CHANNEL = "libtorrent_wrapper"
-    private val libtorrentWrapper = LibtorrentWrapper()
+    // Pass context to LibtorrentWrapper for internal path handling
+    private lateinit var libtorrentWrapper: LibtorrentWrapper
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        libtorrentWrapper = LibtorrentWrapper(this)  // pass context here
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
-                "getVersion" -> {
+
+                "removeTorrentByName" -> {
+                    val args = call.arguments
+                    val torrentName = when (args) {
+                        is String -> args
+                        is Map<*, *> -> args["torrentName"] as? String
+                        else -> null
+                    }
+                    if (torrentName.isNullOrEmpty()) {
+                        result.error("INVALID_ARGUMENT", "torrentName is required", null)
+                        return@setMethodCallHandler
+                    }
                     try {
-                        val version = libtorrentWrapper.getVersion()
-                        result.success(version)
+                        val success = libtorrentWrapper.removeTorrentByName(torrentName)
+                        result.success(success)
+                    } catch (e: Exception) {
+                        result.error("ERROR", e.localizedMessage, null)
+                    }
+                }
+
+                "getTorrentSavePathByName" -> {
+                    val args = call.arguments
+                    val torrentName: String? = when (args) {
+                        is String -> args
+                        is Map<*, *> -> args["torrentName"] as? String
+                        else -> null
+                    }
+                    if (torrentName.isNullOrEmpty()) {
+                        result.error("INVALID_ARGUMENT", "torrentName is required", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        val savePath = libtorrentWrapper.getTorrentSavePathByName(torrentName)
+                        result.success(savePath)
                     } catch (e: Exception) {
                         result.error("ERROR", e.localizedMessage, null)
                     }
@@ -24,6 +61,7 @@ class MainActivity : AudioServiceFragmentActivity() {
 
                 "addTorrent" -> {
                     val args = call.arguments
+
                     if (args !is Map<*, *>) {
                         result.error("INVALID_ARGUMENT", "Expected map arguments", null)
                         return@setMethodCallHandler
@@ -33,13 +71,13 @@ class MainActivity : AudioServiceFragmentActivity() {
                     val savePath = args["savePath"] as? String
 
                     if (filePath.isNullOrEmpty() || savePath.isNullOrEmpty()) {
-                        result.error("INVALID_ARGUMENT", "Missing or empty filePath or savePath", null)
+                        result.error("INVALID_ARGUMENT", "filePath or savePath missing", null)
                         return@setMethodCallHandler
                     }
 
                     val seedMode = args["seedMode"] as? Boolean ?: false
                     val announce = args["announce"] as? Boolean ?: false
-                    val enableDHT = args["enableDHT"] as? Boolean ?: false
+                    val enableDHT = args["enableDHT"] as? Boolean ?: true
                     val enableLSD = args["enableLSD"] as? Boolean ?: true
                     val enableUTP = args["enableUTP"] as? Boolean ?: true
                     val enableTrackers = args["enableTrackers"] as? Boolean ?: false
@@ -63,131 +101,10 @@ class MainActivity : AudioServiceFragmentActivity() {
                     }
                 }
 
-                "createTorrent" -> {
-                    val args = call.arguments
-                    if (args !is Map<*, *>) {
-                        result.error("INVALID_ARGUMENT", "Expected map arguments", null)
-                        return@setMethodCallHandler
-                    }
-
-                    val filePath = args["filePath"] as? String
-                    val outputPath = args["outputPath"] as? String
-                    val trackersList = args["trackers"] as? List<*>
-                    val trackersArray = trackersList?.filterIsInstance<String>()?.toTypedArray()
-
-                    if (filePath.isNullOrEmpty() || outputPath.isNullOrEmpty()) {
-                        result.error("INVALID_ARGUMENT", "Missing or empty filePath or outputPath", null)
-                        return@setMethodCallHandler
-                    }
-
-                    try {
-                        val success = libtorrentWrapper.createTorrent(filePath, outputPath, trackersArray)
-                        result.success(success)
-                    } catch (e: Exception) {
-                        result.error("ERROR", e.localizedMessage, null)
-                    }
-                }
-
                 "getTorrentStats" -> {
                     try {
                         val statsJson = libtorrentWrapper.getTorrentStats()
                         result.success(statsJson)
-                    } catch (e: Exception) {
-                        result.error("ERROR", e.localizedMessage, null)
-                    }
-                }
-
-                "getInfoHash" -> {
-                    val filePath = call.arguments
-                    if (filePath !is String || filePath.isEmpty()) {
-                        result.error("ARG_ERROR", "Expected non-empty filePath string", null)
-                        return@setMethodCallHandler
-                    }
-                    try {
-                        val hash = libtorrentWrapper.getInfoHash(filePath)
-                        if (hash.isNullOrEmpty()) {
-                            result.error("HASH_ERROR", "Failed to extract info hash", null)
-                        } else {
-                            result.success(hash)
-                        }
-                    } catch (e: Exception) {
-                        result.error("ERROR", e.localizedMessage, null)
-                    }
-                }
-
-                "getSwarmInfo" -> {
-                    val infoHash = call.arguments
-                    if (infoHash !is String || infoHash.isEmpty()) {
-                        result.error("ARG_ERROR", "Expected non-empty infoHash string", null)
-                        return@setMethodCallHandler
-                    }
-                    try {
-                        val swarmInfo = libtorrentWrapper.getSwarmInfo(infoHash)
-                        result.success(swarmInfo)
-                    } catch (e: Exception) {
-                        result.error("ERROR", e.localizedMessage, null)
-                    }
-                }
-
-                "removeTorrentByInfoHash" -> {
-                    val infoHash = when (val args = call.arguments) {
-                        is String -> args
-                        is Map<*, *> -> args["infoHash"] as? String
-                        else -> null
-                    }
-                    if (infoHash.isNullOrEmpty()) {
-                        result.error("INVALID_ARGUMENT", "infoHash is required", null)
-                        return@setMethodCallHandler
-                    }
-                    try {
-                        val success = libtorrentWrapper.removeTorrentByInfoHash(infoHash)
-                        result.success(success)
-                    } catch (e: Exception) {
-                        result.error("ERROR", e.localizedMessage, null)
-                    }
-                }
-
-                "removeTorrentByName" -> {
-                    val torrentName = when (val args = call.arguments) {
-                        is String -> args
-                        is Map<*, *> -> args["torrentName"] as? String
-                        else -> null
-                    }
-                    if (torrentName.isNullOrEmpty()) {
-                        result.error("INVALID_ARGUMENT", "torrentName is required", null)
-                        return@setMethodCallHandler
-                    }
-                    try {
-                        val success = libtorrentWrapper.removeTorrentByName(torrentName)
-                        result.success(success)
-                    } catch (e: Exception) {
-                        result.error("ERROR", e.localizedMessage, null)
-                    }
-                }
-
-                "cleanupSession" -> {
-                    try {
-                        libtorrentWrapper.cleanupSession()
-                        result.success(null)
-                    } catch (e: Exception) {
-                        result.error("ERROR", e.localizedMessage, null)
-                    }
-                }
-
-                "getTorrentSavePath" -> {
-                    val rawArgs = call.arguments
-                    val infoHash: String? = when (rawArgs) {
-                        is String -> rawArgs
-                        is Map<*, *> -> rawArgs["infoHash"] as? String
-                        else -> null
-                    }
-                    if (infoHash.isNullOrEmpty()) {
-                        result.error("INVALID_ARGUMENT", "infoHash is required", null)
-                        return@setMethodCallHandler
-                    }
-                    try {
-                        val savePath = libtorrentWrapper.getTorrentSavePath(infoHash)
-                        result.success(savePath.takeIf { !it.isNullOrEmpty() })
                     } catch (e: Exception) {
                         result.error("ERROR", e.localizedMessage, null)
                     }
@@ -202,20 +119,60 @@ class MainActivity : AudioServiceFragmentActivity() {
                     }
                 }
 
-                "dht_putEncrypted" -> {
-                    try {
-                        val args = call.arguments as? Map<*, *> ?: throw IllegalArgumentException("Expected Map arguments")
-                        val key = args["key"] as? String ?: throw IllegalArgumentException("Missing key")
-                        val payload = args["payload"] as? ByteArray ?: throw IllegalArgumentException("Payload is not ByteArray")
+                // New handler to create torrent inside app dir automatically
+                "createTorrentInAppDir" -> {
+                    val args = call.arguments
+                    if (args !is Map<*, *>) {
+                        result.error("INVALID_ARGUMENT", "Expected map arguments", null)
+                        return@setMethodCallHandler
+                    }
 
-                        val success = libtorrentWrapper.dhtPutEncrypted(key, payload)
-                        if (success) {
-                            result.success(true)
-                        } else {
-                            result.error("DHT_PUT_FAIL", "Native DHT put operation failed", null)
-                        }
+                    val filePath = args["filePath"] as? String
+                    val trackersList = args["trackers"] as? List<*>
+
+                    if (filePath.isNullOrEmpty()) {
+                        result.error("INVALID_ARGUMENT", "filePath is required", null)
+                        return@setMethodCallHandler
+                    }
+
+                    val trackersArray = trackersList
+                        ?.filterIsInstance<String>()
+                        ?.toTypedArray()
+
+                    try {
+                        val success = libtorrentWrapper.createTorrentInAppDir(filePath, trackersArray)
+                        result.success(success)
                     } catch (e: Exception) {
-                        result.error("DHT_PUT_ERROR", e.message, null)
+                        result.error("ERROR", e.localizedMessage, null)
+                    }
+                }
+
+                // Keep old createTorrent method (optional)
+                "createTorrent" -> {
+                    val args = call.arguments
+                    if (args !is Map<*, *>) {
+                        result.error("INVALID_ARGUMENT", "Expected map arguments", null)
+                        return@setMethodCallHandler
+                    }
+
+                    val filePath = args["filePath"] as? String
+                    val outputPath = args["outputPath"] as? String
+                    val trackersList = args["trackers"] as? List<*>
+
+                    if (filePath.isNullOrEmpty() || outputPath.isNullOrEmpty()) {
+                        result.error("INVALID_ARGUMENT", "filePath or outputPath is required", null)
+                        return@setMethodCallHandler
+                    }
+
+                    val trackersArray = trackersList
+                        ?.filterIsInstance<String>()
+                        ?.toTypedArray()
+
+                    try {
+                        val success = libtorrentWrapper.createTorrent(filePath, outputPath, trackersArray)
+                        result.success(success)
+                    } catch (e: Exception) {
+                        result.error("ERROR", e.localizedMessage, null)
                     }
                 }
 

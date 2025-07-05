@@ -5,7 +5,6 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:workmanager/workmanager.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:audyn/src/app.dart';
@@ -77,13 +76,38 @@ Future<void> main() async {
 }
 
 Future<void> _requestMediaPermissions() async {
-  if (await Permission.mediaLibrary.isGranted) return;
+  // Android 13+ requires this permission
+  if (await Permission.audio.isGranted) return;
 
-  final status = await Permission.mediaLibrary.request();
-  if (status != PermissionStatus.granted) {
-    debugPrint("Media library permission not granted.");
+  Map<Permission, PermissionStatus> statuses;
+
+  if (await Permission.manageExternalStorage.isGranted ||
+      await Permission.audio.isGranted ||
+      await Permission.storage.isGranted) {
+    return;
+  }
+
+  // Request permissions based on Android version
+  if (await Permission.manageExternalStorage.isDenied) {
+    statuses = await [
+      Permission.manageExternalStorage,
+      Permission.audio,
+      Permission.storage,
+    ].request();
+  } else {
+    statuses = await [
+      Permission.audio,
+      Permission.storage,
+    ].request();
+  }
+
+  if (statuses.values.any((status) => status.isGranted)) {
+    debugPrint("✅ Permissions granted.");
+  } else {
+    debugPrint("❌ Permissions denied. Media access won't work.");
   }
 }
+
 
 @pragma('vm:entry-point')
 void callbackDispatcher() {
