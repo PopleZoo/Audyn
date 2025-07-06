@@ -453,40 +453,28 @@ static jbyteArray make_torrent_bytes(JNIEnv* env, const std::string& filePath)
     return arr;
 }
 
-/* ────────────────────────  JNI exports (add‑ons) ─────────────────────── */
+/* ─────────────────────────────  NEW JNI wrapper  ─────────────────────────── */
 
+extern "C"
 JNIEXPORT jbyteArray JNICALL
-Java_com_example_audyn_LibtorrentWrapper_createTorrentBytes(JNIEnv* env, jobject,
-                                                            jstring jSourcePath) {
-    const char* sourcePath = env->GetStringUTFChars(jSourcePath, nullptr);
-    std::string pathStr(sourcePath);
-    env->ReleaseStringUTFChars(jSourcePath, sourcePath);
+Java_com_example_audyn_LibtorrentWrapper_createTorrentBytes
+        (JNIEnv* env, jobject /*thiz*/, jstring jSourcePath)
+{
+    if (!jSourcePath) return nullptr;
 
-    try {
-        lt::file_storage fs;
-        lt::add_files(fs, pathStr);
-        lt::create_torrent t(fs);
-        t.set_creator("Audyn");
+    const char* src = env->GetStringUTFChars(jSourcePath, nullptr);
+    std::string path(src ? src : "");
+    env->ReleaseStringUTFChars(jSourcePath, src);
 
-        lt::error_code ec;
-        lt::set_piece_hashes(t, pathStr, ec);
-        if (ec) {
-            // You may want to return an error message string here
-            return nullptr;
-        }
+    // Use the tested helper that already does the “parent‑dir” dance
+    jbyteArray arr = make_torrent_bytes(env, path);
 
-        lt::entry e = t.generate();
-        std::vector<char> buffer;
-        lt::bencode(std::back_inserter(buffer), e);
-
-        jbyteArray out = env->NewByteArray(buffer.size());
-        env->SetByteArrayRegion(out, 0, buffer.size(), reinterpret_cast<const jbyte*>(buffer.data()));
-        return out;
-    } catch (const std::exception& ex) {
-        // Log or handle the exception
-        return nullptr;
+    if (arr == nullptr) {
+        LOGE("createTorrentBytes: failed to generate torrent for \"%s\"", path.c_str());
     }
+    return arr;        // null -> Dart will see “null bytes”
 }
+
 
 
 JNIEXPORT jboolean JNICALL

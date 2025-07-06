@@ -24,10 +24,9 @@ class MusicSeederService {
   final LibtorrentService  _libtorrent = LibtorrentService();
 
   /*─────────────────────────  STATE  ─────────────────────────*/
-
-  late final String torrentsDir;                       // <app>/torrents
-  final Set<String> knownTorrentNames      = {};       // normalised names
-  final Map<String, String> _nameToPathMap = {};       // name → song file
+  Directory? torrentsDir;                    // <app>/torrents directory object
+  final Set<String> knownTorrentNames      = {};          // normalized names
+  final Map<String, String> _nameToPathMap = {};          // name → song file
   final Map<String, Map<String, dynamic>> _metaCache = {};
 
   Map<String,String> get nameToPathMap => _nameToPathMap;
@@ -38,8 +37,10 @@ class MusicSeederService {
 
   Future<void> init() async {
     final base = await getApplicationDocumentsDirectory();
-    torrentsDir = p.join(base.path, 'torrents');        // encrypted files live here
-    await Directory(torrentsDir).create(recursive: true);
+    torrentsDir = Directory(p.join(base.path, 'torrents'));
+    if (!await torrentsDir!.exists()) {
+      await torrentsDir!.create(recursive: true);
+    }
   }
 
   /*─────────────────────────  NORMALISER  ───────────────────*/
@@ -78,7 +79,11 @@ class MusicSeederService {
   /*─────────────────────────  CORE SEED LOOP  ───────────────*/
 
   Future<void> _seedFiles(List<String> paths, Duration gap) async {
-    // fetch current torrent list once
+    if (torrentsDir == null) {
+      debugPrint('[Seeder] torrentsDir not initialized.');
+      return;
+    }
+
     final Set<String> active = {
       ...(await _libtorrent.getAllTorrents())
           .map((m) => _norm(m['name']?.toString() ?? ''))
@@ -88,8 +93,8 @@ class MusicSeederService {
       final songFile = File(songPath);
       if (!await songFile.exists()) continue;
 
-      final normName   = _norm(songPath);
-      final encPath    = p.join(torrentsDir, '$normName.audyn.torrent');
+      final normName = _norm(songPath);
+      final encPath = p.join(torrentsDir!.path, '$normName.audyn.torrent');
 
       Uint8List torrentBytesPlain;
 
@@ -167,7 +172,8 @@ class MusicSeederService {
   String? getEncryptedTorrentPath(String anyName) {
     final key = _norm(anyName);
     if (!knownTorrentNames.contains(key)) return null;
-    return p.join(torrentsDir, '$key.audyn.torrent');
+    if (torrentsDir == null) return null;
+    return p.join(torrentsDir!.path, '$key.audyn.torrent');
   }
 
   List<String> getLocalFilesForTorrent(String anyName) {
