@@ -3,10 +3,20 @@
     package="com.example.audyn">
 
     <!-- Permissions -->
+    <!-- MANAGE_EXTERNAL_STORAGE is the all files access permission (Android 11+).
+         It requires a special permission from Google Play if distributed publicly. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+
+    <!-- READ_EXTERNAL_STORAGE required to read files on all Android versions -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
+    <!-- WRITE_EXTERNAL_STORAGE deprecated on API 30+, maxSdkVersion=29 is correct -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+
+    <!-- For Android 13+ to read audio media specifically -->
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+
+    <!-- Other permissions you have -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -15,7 +25,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
-    <!-- Required for Android 11+ -->
+    <!-- Intent queries (required for Android 11+) -->
     <queries>
         <intent>
             <action android:name="android.intent.action.VIEW" />
@@ -29,8 +39,8 @@
 
     <application
         android:label="audyn"
-        android:icon="@mipmap/ic_launcher">
-        android:debuggable="true"
+        android:icon="@mipmap/ic_launcher"
+        android:debuggable="true">
 
         <activity
             android:name="com.example.audyn.MainActivity"
@@ -51,7 +61,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- ✅ OAuth redirect intent-filter -->
+            <!-- OAuth redirect -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

@@ -6,7 +6,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : AudioServiceFragmentActivity() {
-    private val CHANNEL = "libtorrent_wrapper"
+    private val CHANNEL = "libtorrentwrapper"
     // Pass context to LibtorrentWrapper for internal path handling
     private lateinit var libtorrentWrapper: LibtorrentWrapper
 
@@ -171,6 +171,55 @@ class MainActivity : AudioServiceFragmentActivity() {
                     try {
                         val success = libtorrentWrapper.createTorrent(filePath, outputPath, trackersArray)
                         result.success(success)
+                    } catch (e: Exception) {
+                        result.error("ERROR", e.localizedMessage, null)
+                    }
+                }
+
+                "createTorrentBytes" -> {
+                    val args = call.arguments as? Map<*, *>
+                    val sourcePath = args?.get("sourcePath") as? String
+
+                    if (sourcePath == null) {
+                        result.error("MISSING_ARG", "sourcePath is required", null)
+                        return@setMethodCallHandler
+                    }
+
+                    try {
+                        val torrentBytes = libtorrentWrapper.createTorrentBytes(sourcePath)
+                        result.success(torrentBytes)
+                    } catch (e: Exception) {
+                        result.error("NATIVE_ERROR", e.localizedMessage, null)
+                    }
+                }
+
+
+
+                "addTorrentFromBytes" -> {
+                    val args = call.arguments as? Map<*, *> ?: return@setMethodCallHandler
+                    result.error("INVALID_ARGUMENT", "Map expected", null)
+
+                    val torrentBytes = args["torrentBytes"] as? ByteArray
+                        ?: return@setMethodCallHandler result.error(
+                            "INVALID_ARGUMENT",
+                            "torrentBytes missing",
+                            null
+                        )
+                    val savePath = args["savePath"] as? String ?: ""
+                    val seedMode = args["seedMode"] as? Boolean ?: false
+                    val announce = args["announce"] as? Boolean ?: false
+                    val enableDHT = args["enableDHT"] as? Boolean ?: true
+                    val enableLSD = args["enableLSD"] as? Boolean ?: true
+                    val enableUTP = args["enableUTP"] as? Boolean ?: true
+                    val enableTrackers = args["enableTrackers"] as? Boolean ?: false
+                    val enablePEX = args["enablePeerExchange"] as? Boolean ?: true
+
+                    try {
+                        val ok = libtorrentWrapper.addTorrentFromBytes(
+                            torrentBytes, savePath, seedMode, announce,
+                            enableDHT, enableLSD, enableUTP, enableTrackers, enablePEX
+                        )
+                        result.success(ok)
                     } catch (e: Exception) {
                         result.error("ERROR", e.localizedMessage, null)
                     }

@@ -1,9 +1,14 @@
+import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 
 class LibtorrentWrapper {
-  static const MethodChannel _channel = MethodChannel('libtorrent_wrapper');
+  static const MethodChannel _channel = MethodChannel('libtorrentwrapper');
+
+  // Simple queue to serialize createTorrent calls
+  static final List<_CreateTorrentRequest> _createTorrentQueue = [];
+  static bool _isCreatingTorrent = false;
 
   /// Adds a torrent to the libtorrent session.
   /// Use this to join or seed Audyn P2P-only torrents.
@@ -12,11 +17,11 @@ class LibtorrentWrapper {
         required String savePath,
         bool seedMode = false,
         bool announce = false,
-        bool enableDHT = false,         // 🔕 Disable public DHT
-        bool enableLSD = true,          // ✅ Enable local peer discovery
+        bool enableDHT = true,
+        bool enableLSD = true,
         bool enableUTP = true,
-        bool enableTrackers = false,    // 🔕 Disable public trackers
-        bool enablePeerExchange = true, // ✅ Local peer gossip
+        bool enableTrackers = false,
+        bool enablePeerExchange = true,
       }) async {
     try {
       final result = await _channel.invokeMethod<bool>('addTorrent', {
@@ -37,17 +42,18 @@ class LibtorrentWrapper {
     }
   }
 
-  /// NEW: Adds a torrent from raw torrent file bytes directly.
-  static Future<bool> addTorrentFromBytes(Uint8List torrentBytes, {
-    required String savePath,
-    bool seedMode = false,
-    bool announce = false,
-    bool enableDHT = false,
-    bool enableLSD = true,
-    bool enableUTP = true,
-    bool enableTrackers = false,
-    bool enablePeerExchange = true,
-  }) async {
+  /// Adds a torrent from raw torrent file bytes directly.
+  static Future<bool> addTorrentFromBytes(
+      Uint8List torrentBytes, {
+        required String savePath,
+        bool seedMode = false,
+        bool announce = false,
+        bool enableDHT = true,
+        bool enableLSD = true,
+        bool enableUTP = true,
+        bool enableTrackers = false,
+        bool enablePeerExchange = true,
+      }) async {
     try {
       final result = await _channel.invokeMethod<bool>('addTorrentFromBytes', {
         'torrentBytes': torrentBytes,
@@ -79,28 +85,54 @@ class LibtorrentWrapper {
   }
 
   /// Creates a .torrent file from a given file path.
+  /// This method queues requests to avoid concurrency issues in native code.
   static Future<bool> createTorrent(
       String path,
       String torrentFilePath, {
         List<String>? trackers,
-      }) async {
-    try {
-      final args = {
-        'filePath': path,
-        'outputPath': torrentFilePath,
-        'trackers': trackers ?? [],
-      };
+      }) {
+    final completer = Completer<bool>();
 
-      final result = await _channel.invokeMethod<bool>('createTorrent', args);
-      return result == true;
-    } catch (e, stacktrace) {
+    _createTorrentQueue.add(
+      _CreateTorrentRequest(
+        path,
+        torrentFilePath,
+        trackers ?? [],
+        completer,
+      ),
+    );
+
+    _processCreateTorrentQueue();
+
+    return completer.future;
+  }
+
+  // Process the createTorrent queue one at a time
+  static void _processCreateTorrentQueue() {
+    if (_isCreatingTorrent || _createTorrentQueue.isEmpty) return;
+
+    _isCreatingTorrent = true;
+    final request = _createTorrentQueue.removeAt(0);
+
+    final args = {
+      'filePath': request.path,
+      'outputPath': request.outputPath,
+      'trackers': request.trackers,
+    };
+
+    _channel.invokeMethod<bool>('createTorrent', args).then((result) {
+      request.completer.complete(result == true);
+    }).catchError((e, stacktrace) {
       debugPrint('[LibtorrentWrapper] createTorrent error: $e\n$stacktrace');
-      return false;
-    }
+      request.completer.complete(false);
+    }).whenComplete(() {
+      _isCreatingTorrent = false;
+      // Process next request in queue
+      _processCreateTorrentQueue();
+    });
   }
 
   /// Extracts the infoHash from a .torrent file.
-  /// Consider removing if no longer used.
   static Future<String?> getInfoHash(String torrentPath) async {
     try {
       final result = await _channel.invokeMethod<String>('getInfoHash', torrentPath);
@@ -122,8 +154,7 @@ class LibtorrentWrapper {
     }
   }
 
-  /// Retrieves swarm info for a given infoHash (if supported).
-  /// Consider removing or replacing if infoHash no longer used.
+  /// Retrieves swarm info for a given infoHash.
   static Future<String?> getSwarmInfo(String infoHash) async {
     try {
       final result = await _channel.invokeMethod<String>('getSwarmInfo', infoHash);
@@ -135,7 +166,6 @@ class LibtorrentWrapper {
   }
 
   /// Removes a torrent from the session by its infoHash.
-  /// You may remove this if no longer using infoHash.
   static Future<bool> removeTorrentByInfoHash(String infoHash) async {
     try {
       final result = await _channel.invokeMethod<bool>(
@@ -149,8 +179,7 @@ class LibtorrentWrapper {
     }
   }
 
-  /// Get the save path (download folder) for a torrent by its infoHash.
-  /// Consider removing or adapting this method if infoHash is dropped.
+  /// Get the save path for a torrent by its infoHash.
   static Future<String?> getTorrentSavePath(String infoHash) async {
     try {
       final result = await _channel.invokeMethod<String>(
@@ -165,7 +194,6 @@ class LibtorrentWrapper {
   }
 
   /// Removes a torrent by its torrent name instead of infoHash.
-  /// This requires native-side support for removing torrents by name.
   static Future<bool> removeTorrentByName(String torrentName) async {
     try {
       final result = await _channel.invokeMethod<bool>(
@@ -178,4 +206,13 @@ class LibtorrentWrapper {
       return false;
     }
   }
+}
+
+class _CreateTorrentRequest {
+  final String path;
+  final String outputPath;
+  final List<String> trackers;
+  final Completer<bool> completer;
+
+  _CreateTorrentRequest(this.path, this.outputPath, this.trackers, this.completer);
 }

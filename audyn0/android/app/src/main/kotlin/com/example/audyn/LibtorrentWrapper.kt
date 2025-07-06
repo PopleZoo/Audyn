@@ -4,57 +4,51 @@ import android.content.Context
 import java.io.File
 
 class LibtorrentWrapper(private val context: Context) {
+
     companion object {
         init {
             System.loadLibrary("libtorrentwrapper")
         }
     }
 
+    /* ---------- ORIGINAL API (unchanged) ---------- */
     external fun getVersion(): String
-
     external fun addTorrent(
-        filePath: String,
-        savePath: String,
-        seedMode: Boolean,
-        announce: Boolean,
-        enableDHT: Boolean,
-        enableLSD: Boolean,
-        enableUTP: Boolean,
-        enableTrackers: Boolean,
-        enablePeerExchange: Boolean
+        filePath: String, savePath: String,
+        seedMode: Boolean, announce: Boolean,
+        enableDHT: Boolean, enableLSD: Boolean, enableUTP: Boolean,
+        enableTrackers: Boolean, enablePeerExchange: Boolean
     ): Boolean
-
     external fun getAllTorrents(): String
-
     external fun createTorrent(
-        filePath: String,
-        outputPath: String,
-        trackers: Array<String>? = null
+        filePath: String, outputPath: String, trackers: Array<String>? = null
     ): Boolean
-
     external fun removeTorrentByName(torrentName: String): Boolean
-
     external fun getTorrentSavePathByName(torrentName: String): String?
-
     external fun getTorrentStats(): String
-
     external fun cleanupSession()
 
-    // Helper to create torrent file in app’s internal storage directory
-    fun createTorrentInAppDir(
-        sourceFilePath: String,
-        trackers: Array<String>? = null
-    ): Boolean {
-        // Get app’s internal files directory
-        val appDir = context.filesDir
+    /* ---------- NEW “bytes” API (just added) ---------- */
 
-        // Derive torrent file name from source file, e.g. "myfile.mp3" -> "myfile.torrent"
-        val sourceFile = File(sourceFilePath)
-        val torrentFileName = sourceFile.nameWithoutExtension + ".torrent"
+    /** Build (in‑memory) *.torrent* bytes for a single file. */
+    external fun createTorrentBytes(sourcePath: String): ByteArray
 
-        // Construct full output path inside app directory
-        val outputFile = File(appDir, torrentFileName)
+    /** Add a torrent from raw *.torrent* bytes already in memory. */
+    external fun addTorrentFromBytes(
+        torrentBytes: ByteArray,      // raw *.torrent*
+        savePath:   String,
+        seedMode:   Boolean, announce: Boolean,
+        enableDHT:  Boolean, enableLSD: Boolean, enableUTP: Boolean,
+        enableTrackers: Boolean, enablePeerExchange: Boolean
+    ): Boolean
 
-        return createTorrent(sourceFilePath, outputFile.absolutePath, trackers)
+
+    /* ---------- tiny helper you already had ---------- */
+    fun createTorrentInAppDir(sourceFilePath: String,
+                              trackers: Array<String>? = null): Boolean {
+        val torrentName = File(sourceFilePath).nameWithoutExtension + ".torrent"
+        val output      = File(context.filesDir, torrentName)
+        return createTorrent(sourceFilePath, output.absolutePath, trackers)
     }
+
 }

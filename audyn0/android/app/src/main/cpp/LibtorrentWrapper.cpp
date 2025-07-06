@@ -428,5 +428,122 @@ Java_com_example_audyn_LibtorrentWrapper_getTorrentSavePathByName(JNIEnv* env, j
     env->ReleaseStringUTFChars(jName, name);
     return env->NewStringUTF(path.c_str());
 }
+// build an in‑memory torrent and return as jbyteArray
+static jbyteArray make_torrent_bytes(JNIEnv* env, const std::string& filePath)
+{
+    lt::file_storage fs;
+    lt::add_files(fs, filePath);
+    if (fs.num_files() == 0) return nullptr;
 
+    lt::create_torrent t(fs);
+    std::string parent = filePath.substr(0, filePath.find_last_of('/'));
+
+    lt::error_code ec;
+    lt::set_piece_hashes(t, parent, [&](lt::piece_index_t) { return false; }, ec);
+    if (ec) return nullptr;
+
+    std::vector<char> buf;
+    lt::bencode(std::back_inserter(buf), t.generate());
+
+    jbyteArray arr = env->NewByteArray(static_cast<jsize>(buf.size()));
+    env->SetByteArrayRegion(
+            arr, 0, static_cast<jsize>(buf.size()),
+            reinterpret_cast<const jbyte*>(buf.data())
+    );
+    return arr;
+}
+
+/* ────────────────────────  JNI exports (add‑ons) ─────────────────────── */
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_example_audyn_LibtorrentWrapper_createTorrentBytes(JNIEnv* env, jobject,
+                                                            jstring jSourcePath) {
+    const char* sourcePath = env->GetStringUTFChars(jSourcePath, nullptr);
+    std::string pathStr(sourcePath);
+    env->ReleaseStringUTFChars(jSourcePath, sourcePath);
+
+    try {
+        lt::file_storage fs;
+        lt::add_files(fs, pathStr);
+        lt::create_torrent t(fs);
+        t.set_creator("Audyn");
+
+        lt::error_code ec;
+        lt::set_piece_hashes(t, pathStr, ec);
+        if (ec) {
+            // You may want to return an error message string here
+            return nullptr;
+        }
+
+        lt::entry e = t.generate();
+        std::vector<char> buffer;
+        lt::bencode(std::back_inserter(buffer), e);
+
+        jbyteArray out = env->NewByteArray(buffer.size());
+        env->SetByteArrayRegion(out, 0, buffer.size(), reinterpret_cast<const jbyte*>(buffer.data()));
+        return out;
+    } catch (const std::exception& ex) {
+        // Log or handle the exception
+        return nullptr;
+    }
+}
+
+
+JNIEXPORT jboolean JNICALL
+Java_com_example_audyn_LibtorrentWrapper_addTorrentFromBytes
+        (JNIEnv* env, jobject /*thiz*/,
+         jbyteArray jBytes, jstring jSavePath,
+         jboolean jSeed, jboolean jAnnounce,
+         jboolean jEnableDHT, jboolean jEnableLSD, jboolean jEnableUTP,
+         jboolean jEnableTrackers, jboolean jEnablePEX)
+{
+    if (!jBytes || !jSavePath) return JNI_FALSE;
+
+    // grab inputs
+    jsize len     = env->GetArrayLength(jBytes);
+    jbyte* buffer = env->GetByteArrayElements(jBytes, nullptr);
+    const char* save = env->GetStringUTFChars(jSavePath, nullptr);
+
+    bool ok = false;
+    try {
+        auto& ses = get_session();
+
+        lt::error_code ec;
+        lt::bdecode_node root;
+        lt::bdecode(reinterpret_cast<char const*>(buffer),
+                    reinterpret_cast<char const*>(buffer) + len,
+                    root, ec);
+        if (ec) throw std::runtime_error(ec.message());
+
+        auto ti = std::make_shared<lt::torrent_info>(root, ec);
+        if (ec) throw std::runtime_error(ec.message());
+
+        lt::add_torrent_params p;
+        p.ti        = ti;
+        p.save_path = save;
+        if (jSeed)           p.flags |= seed_mode;
+        if (!jAnnounce)      p.flags |= paused;
+        if (!jEnableDHT)     p.flags |= disable_dht;
+        if (!jEnableLSD)     p.flags |= disable_lsd;
+        if (!jEnablePEX)     p.flags |= disable_pex;
+        if (!jEnableTrackers) p.trackers.clear();
+
+        if (!jEnableUTP) {
+            lt::settings_pack sp;
+            sp.set_bool(lt::settings_pack::enable_outgoing_utp, false);
+            sp.set_bool(lt::settings_pack::enable_incoming_utp, false);
+            ses.apply_settings(sp);
+        }
+
+        ses.async_add_torrent(std::move(p));
+        ok = true;
+    } catch (std::exception const& e) {
+        LOGE("addTorrentFromBytes: %s", e.what());
+    }
+
+    // cleanup JNI refs
+    env->ReleaseByteArrayElements(jBytes, buffer, JNI_ABORT);
+    env->ReleaseStringUTFChars(jSavePath, save);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
 } // extern "C"

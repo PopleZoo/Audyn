@@ -1,245 +1,186 @@
-import 'dart:io';
+/*─────────────────────────────────────────────────────────────*\
+│  lib/services/music_seeder_service.dart                      │
+\*─────────────────────────────────────────────────────────────*/
+
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_media_metadata/flutter_media_metadata.dart';
+import 'package:on_audio_query/on_audio_query.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:on_audio_query/on_audio_query.dart';
 
+import '../utils/CryptoHelper.dart';
 import '../src/data/services/LibtorrentService.dart';
-import '../src/native/libtorrent_wrapper.dart';
 
 class MusicSeederService {
-  final OnAudioQuery audioQuery;
-  final Set<String> knownTorrentNames = {}; // Normalized torrent names
-  late final String torrentsDir;
+  MusicSeederService([OnAudioQuery? aq]) : audioQuery = aq ?? OnAudioQuery();
 
-  final Map<String, String> _nameToPathMap = {}; // normalizedName -> full file path
-  final Map<String, Map<String, dynamic>?> _metadataCache = {};
+  /*─────────────────────────  DI  ───────────────────────────*/
 
-  Map<String, String> get nameToPathMap => _nameToPathMap;
+  final OnAudioQuery       audioQuery;
+  final LibtorrentService  _libtorrent = LibtorrentService();
 
-  MusicSeederService([OnAudioQuery? audioQuery])
-      : audioQuery = audioQuery ?? OnAudioQuery() {
-    debugPrint('[MusicSeederService] Constructor called');
-  }
+  /*─────────────────────────  STATE  ─────────────────────────*/
 
-  static const List<String> allowedExtensions = ['.mp3', '.flac', '.wav', '.m4a'];
+  late final String torrentsDir;                       // <app>/torrents
+  final Set<String> knownTorrentNames      = {};       // normalised names
+  final Map<String, String> _nameToPathMap = {};       // name → song file
+  final Map<String, Map<String, dynamic>> _metaCache = {};
 
-  /// Normalize torrent names to a consistent key format for indexing
-  /// Example: "Tenacious D - Video Games.mp3" -> "tenacious_d___video_games"
-  static String normalizeTorrentName(String name) {
-    return p.basenameWithoutExtension(name)
-        .toLowerCase()
-        .replaceAll(RegExp(r"[^\w]+"), "_");
-  }
+  Map<String,String> get nameToPathMap => _nameToPathMap;
 
-  Future<void> _initPaths() async {
-    final directory = await getApplicationDocumentsDirectory();
-    torrentsDir = p.join(directory.path, 'torrents');
-  }
+  static const _allowedExt = ['.mp3', '.flac', '.wav', '.m4a'];
+
+  /*─────────────────────────  INIT  ─────────────────────────*/
 
   Future<void> init() async {
-    await _initPaths();
-
-    final dir = Directory(torrentsDir);
-    if (!await dir.exists()) await dir.create(recursive: true);
+    final base = await getApplicationDocumentsDirectory();
+    torrentsDir = p.join(base.path, 'torrents');        // encrypted files live here
+    await Directory(torrentsDir).create(recursive: true);
   }
 
-  Future<void> resetSeedingState() async {
-    try {
-      knownTorrentNames.clear();
-      _nameToPathMap.clear();
-      _metadataCache.clear();
-    } catch (e) {
-      debugPrint('[Seeder] ⚠️ Failed to reset seeding state: $e');
-    }
-  }
+  /*─────────────────────────  NORMALISER  ───────────────────*/
 
-  Future<void> restartSeeding() async {
-    await init();
-    await resetSeedingState();
+  static String _norm(String name) =>
+      p.basenameWithoutExtension(name).toLowerCase().replaceAll(RegExp(r'[^\w]+'), '_');
 
-    try {
-      final rawStats = await LibtorrentWrapper.getTorrentStats();
-      final List<Map<String, dynamic>> currentTorrents =
-      (jsonDecode(rawStats) as List).whereType<Map<String, dynamic>>().toList();
+  /*─────────────────────────  PUBLIC          ───────────────*/
 
-      for (final torrent in currentTorrents) {
-        final torrentNameRaw = torrent['name']?.toString();
-        if (torrentNameRaw == null || torrentNameRaw.isEmpty) continue;
-
-        final normalized = normalizeTorrentName(torrentNameRaw);
-        await LibtorrentWrapper.removeTorrentByName(torrentNameRaw);
-        knownTorrentNames.remove(normalized);
-        _nameToPathMap.remove(normalized);
-        _metadataCache.remove(normalized);
-      }
-    } catch (_) {}
-
-    await seedMissingSongs();
-  }
-
-  Future<void> seedMissingSongs({Duration delayBetweenAdds = const Duration(milliseconds: 200)}) async {
-    try {
-      final permission = await audioQuery.permissionsStatus();
-      if (!permission) return;
-    } catch (_) {
-      return;
+  Future<void> seedMissingSongs({Duration gap = const Duration(milliseconds: 120)}) async {
+    if (!(await audioQuery.permissionsStatus())) {
+      if (!await audioQuery.permissionsRequest()) return;
     }
 
-    final List<SongModel> allSongs = await audioQuery.querySongs();
-    final List<String> validFilePaths = [];
+    final songs = await audioQuery.querySongs();
+    final valid = <String>[];
 
-    for (final song in allSongs) {
-      final ext = p.extension(song.data).toLowerCase();
-      if (!(song.isMusic == true && allowedExtensions.contains(ext))) continue;
+    for (final s in songs) {
+      final ext = p.extension(s.data).toLowerCase();
+      if (!_allowedExt.contains(ext)) continue;
 
-      final file = File(song.data);
-      if (!await file.exists()) continue;
+      final f = File(s.data);
+      if (!await f.exists()) continue;
 
       try {
-        final metadata = await MetadataRetriever.fromFile(file);
-        final hasAnyMetadata = (metadata.trackName?.trim().isNotEmpty ?? false) ||
-            (metadata.authorName?.trim().isNotEmpty ?? false) ||
-            (metadata.albumName?.trim().isNotEmpty ?? false);
-        final durationOk = (metadata.trackDuration != null && metadata.trackDuration! > 30 * 1000);
-        if (hasAnyMetadata && durationOk) validFilePaths.add(song.data);
-      } catch (_) {}
+        final meta = await MetadataRetriever.fromFile(f);
+        final okDuration = (meta.trackDuration ?? 0) > 30 * 1000;
+        final okInfo     = (meta.trackName ?? '').trim().isNotEmpty;
+        if (okDuration && okInfo) valid.add(s.data);
+      } catch (_) {/* ignore */}
     }
 
-    await seedFiles(validFilePaths, delayBetweenAdds: delayBetweenAdds);
+    await _seedFiles(valid, gap);
   }
 
-  Future<void> seedFiles(List<String> filePaths, {Duration delayBetweenAdds = const Duration(milliseconds: 100)}) async {
-    final rawStats = await LibtorrentWrapper.getTorrentStats();
+  /*─────────────────────────  CORE SEED LOOP  ───────────────*/
 
-    final decoded = jsonDecode(rawStats);
+  Future<void> _seedFiles(List<String> paths, Duration gap) async {
+    // fetch current torrent list once
+    final Set<String> active = {
+      ...(await _libtorrent.getAllTorrents())
+          .map((m) => _norm(m['name']?.toString() ?? ''))
+    };
 
-    List<Map<String, dynamic>> currentTorrents = [];
+    for (final songPath in paths) {
+      final songFile = File(songPath);
+      if (!await songFile.exists()) continue;
 
-    if (decoded is List) {
-      currentTorrents = decoded.whereType<Map<String, dynamic>>().toList();
-    } else if (decoded is Map<String, dynamic> && decoded.containsKey('torrents')) {
-      final torrentsRaw = decoded['torrents'];
-      if (torrentsRaw is List) {
-        currentTorrents = torrentsRaw.whereType<Map<String, dynamic>>().toList();
-      }
-    } else {
-      debugPrint('[MusicSeederService.seedFiles] Unexpected rawStats format: ${decoded.runtimeType}');
-    }
+      final normName   = _norm(songPath);
+      final encPath    = p.join(torrentsDir, '$normName.audyn.torrent');
 
-    final Set<String> activeTorrentNamesRaw = currentTorrents
-        .map((t) => t['name']?.toString())
-        .whereType<String>()
-        .toSet();
+      Uint8List torrentBytesPlain;
 
-    // Normalize active torrent names for quick lookup
-    final Set<String> activeTorrentNames = activeTorrentNamesRaw.map(normalizeTorrentName).toSet();
-
-    final libtorrent = LibtorrentService();
-
-    for (final path in filePaths) {
-      final file = File(path);
-      if (!await file.exists()) continue;
-
-      // Use normalized title for torrent name
-      final normalizedTitle = normalizeTorrentName(path);
-      final torrentFilePath = p.join(torrentsDir, '$normalizedTitle.torrent');
-      final torrentFile = File(torrentFilePath);
-
-      String torrentName = normalizedTitle;
-
-      if (!await torrentFile.exists()) {
-        final createdName = await libtorrent.createTorrentAndGetName(path);
-        if (createdName == null) continue;
-
-        // Normalize created torrent name
-        torrentName = normalizeTorrentName(createdName);
+      /*------------------------- create ----------------------*/
+      try {
+        torrentBytesPlain =
+            await _libtorrent.createTorrentBytes(songFile.path) ?? Uint8List(0);
+        if (torrentBytesPlain.isEmpty) {
+          debugPrint('[Seeder] ❌ Failed to create torrent for $songPath');
+          continue;
+        }
+      } catch (e) {
+        debugPrint('[Seeder] ❌ Native createTorrentBytes failed: $e');
+        continue;
       }
 
-      if (!activeTorrentNames.contains(torrentName)) {
-        await libtorrent.addTorrent(
-          torrentFilePath,
-          p.dirname(path),
+      /*------------------------- store encrypted ------------*/
+      try {
+        final encBytes = CryptoHelper.encryptBytes(torrentBytesPlain);
+        await File(encPath).writeAsBytes(encBytes, flush: true);
+      } catch (e) {
+        debugPrint('[Seeder] ❌ Writing encrypted file failed: $e');
+        continue;
+      }
+
+      /*------------------------- add to session -------------*/
+      if (!active.contains(normName)) {
+        final ok = await _libtorrent.addTorrentFromBytes(
+          torrentBytesPlain,
+          p.dirname(songPath),
           seedMode: true,
-          announce: false,
-          enableDHT: false,
-          enableLSD: true,
-          enableUTP: true,
-          enableTrackers: false,
-          enablePeerExchange: true,
+          announce : false,
         );
+        if (!ok) {
+          debugPrint('[Seeder] ⚠️ addTorrentFromBytes failed for $songPath');
+          continue;
+        }
       }
 
-      if (!knownTorrentNames.contains(torrentName)) {
-        knownTorrentNames.add(torrentName);
-        _nameToPathMap[torrentName] = path;
+      /*------------------------- bookkeeping ----------------*/
+      if (knownTorrentNames.add(normName)) {
+        _nameToPathMap[normName] = songPath;
       }
 
-      await Future.delayed(delayBetweenAdds);
+      await Future.delayed(gap);
     }
   }
 
-  Future<Map<String, dynamic>?> getMetadataForName(String torrentName) async {
-    final normalizedName = normalizeTorrentName(torrentName);
+  /*─────────────────────────  METADATA CACHE  ───────────────*/
 
-    if (_metadataCache.containsKey(normalizedName)) return _metadataCache[normalizedName];
+  Future<Map<String,dynamic>?> getMetadataForName(String anyName) async {
+    final key = _norm(anyName);
+    if (_metaCache.containsKey(key)) return _metaCache[key];
 
-    final path = _nameToPathMap[normalizedName];
+    final path = _nameToPathMap[key];
     if (path == null) return null;
 
-    final file = File(path);
-    if (!await file.exists()) return null;
-
     try {
-      final metadata = await MetadataRetriever.fromFile(file);
-      final metaMap = {
-        'title': metadata.trackName ?? '',
-        'artist': metadata.authorName ?? '',
-        'album': metadata.albumName ?? '',
-        'albumArt': metadata.albumArt,
-        'duration': metadata.trackDuration ?? 0,
+      final meta = await MetadataRetriever.fromFile(File(path));
+      return _metaCache[key] = {
+        'title'    : meta.trackName  ?? '',
+        'artist'   : meta.authorName ?? '',
+        'album'    : meta.albumName  ?? '',
+        'albumArt' : meta.albumArt,
+        'duration' : meta.trackDuration ?? 0,
       };
-      _metadataCache[normalizedName] = metaMap;
-      return metaMap;
     } catch (e) {
-      debugPrint('[getMetadataForName] Failed to read metadata for $torrentName: $e');
+      debugPrint('[Meta] read error: $e');
       return null;
     }
   }
 
-  String? getTorrentFilePathForName(String torrentName) {
-    final normalizedName = normalizeTorrentName(torrentName);
-    if (!knownTorrentNames.contains(normalizedName)) return null;
+  /*─────────────────────────  UTILS  ────────────────────────*/
 
-    final filePath = _nameToPathMap[normalizedName];
-    if (filePath == null) return null;
-
-    final normalizedTitle = normalizeTorrentName(filePath);
-    return p.join(torrentsDir, '$normalizedTitle.torrent');
+  String? getEncryptedTorrentPath(String anyName) {
+    final key = _norm(anyName);
+    if (!knownTorrentNames.contains(key)) return null;
+    return p.join(torrentsDir, '$key.audyn.torrent');
   }
 
-  Future<void> addTorrentByName(String torrentName) async {
-    final libtorrent = LibtorrentService();
-    final normalizedName = normalizeTorrentName(torrentName);
-
-    final path = _nameToPathMap[normalizedName];
-    if (path == null || path.isEmpty) return;
-
-    final torrentPath = getTorrentFilePathForName(normalizedName);
-    if (torrentPath == null || !File(torrentPath).existsSync()) return;
-
-    await libtorrent.addTorrent(
-      torrentPath,
-      p.dirname(path),
-      seedMode: true,
-      announce: false,
-      enableDHT: true,
-      enableLSD: true,
-      enableUTP: true,
-      enableTrackers: false,
-      enablePeerExchange: true,
-    );
+  List<String> getLocalFilesForTorrent(String anyName) {
+    final path = _nameToPathMap[_norm(anyName)];
+    if (path == null) return [];
+    final f = File(path);
+    if (f.existsSync()) return [p.basename(path)];
+    final d = Directory(path);
+    if (!d.existsSync()) return [];
+    return d
+        .listSync()
+        .whereType<File>()
+        .map((e) => p.basename(e.path))
+        .toList();
   }
 }

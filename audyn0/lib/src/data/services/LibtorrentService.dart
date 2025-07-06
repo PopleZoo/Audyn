@@ -1,38 +1,86 @@
-import 'dart:async';
 import 'dart:convert';
-
-import 'package:flutter/foundation.dart';
+import 'dart:typed_data';
 import 'package:flutter/services.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
+import 'package:flutter/foundation.dart';
 
-/// ************************************************************
-/// 🌐 LIBTORRENT SERVICE (NO INFO_HASH, USE TORRENT NAME INSTEAD)
-/// ************************************************************
-
+/// A thin, Flutter‑side wrapper around the native libtorrent bridge.
+/// All heavy work happens in the platform (Android / iOS / desktop) code.
+///
+/// Make sure the same method names exist in your MethodChannel handler
+/// on the native side, otherwise you’ll get a `MissingPluginException`.
 class LibtorrentService {
-  static const _ch = MethodChannel('libtorrent_wrapper');
+  static const MethodChannel _channel = MethodChannel('libtorrentwrapper');
 
-  /// Get libtorrent version
-  Future<String> getVersion() async =>
-      (await _ch.invokeMethod<String>('getVersion')) ?? 'unknown';
+  /*─────────────────────────────────────────*
+   *  QUERY / SESSION HELPERS                *
+   *─────────────────────────────────────────*/
 
-  /// Cleanup session
-  Future<void> cleanupSession() async =>
-      await _ch.invokeMethod('cleanupSession');
+  Future<List<Map<String, dynamic>>> getAllTorrents() async {
+    try {
+      final dynamic raw = await _channel.invokeMethod('getAllTorrents');
+      if (raw is String) {
+        // native returned JSON string, parse it
+        final parsed = jsonDecode(raw);
+        if (parsed is List) {
+          return parsed.cast<Map<String, dynamic>>();
+        }
+        return [];
+      } else if (raw is List) {
+        return raw
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList(growable: false);
+      }
+      return [];
+    } catch (e, st) {
+      debugPrint('[LibtorrentService] getAllTorrents failed: $e\n$st');
+      return [];
+    }
+  }
 
-  /// Add torrent by file path and save path
-  Future<bool> addTorrent(String filePath, String savePath,
-      {bool seedMode = true,
+
+  /*─────────────────────────────────────────*
+   *  ADD / REMOVE TORRENTS  (file‑based)    *
+   *─────────────────────────────────────────*/
+
+  /// Create a **.torrent** file on disk and return the torrent’s *name*
+  /// that libtorrent reports back (usually the root folder / file name).
+  Future<String?> createTorrentAndGetName(
+      String sourcePath,
+      String outputDir,
+      ) async {
+    try {
+      final name = await _channel.invokeMethod<String>(
+        'createTorrentAndGetName',
+        {
+          'sourcePath': sourcePath,
+          'outputDir': outputDir,
+        },
+      );
+      return name;
+    } catch (e, st) {
+      debugPrint('[LibtorrentService] createTorrentAndGetName failed: $e\n$st');
+      return null;
+    }
+  }
+
+  /// Add an *existing* .torrent **file** on disk.
+  ///
+  /// Parameters mirror the ones you already pass from `MusicSeederService`.
+  Future<bool> addTorrent(
+      String torrentFilePath,
+      String savePath, {
+        bool seedMode = true,
         bool announce = false,
-        bool enableDHT = false,
+        bool enableDHT = true,
         bool enableLSD = true,
         bool enableUTP = true,
         bool enableTrackers = false,
-        bool enablePeerExchange = true}) async {
+        bool enablePeerExchange = true,
+      }) async {
     try {
-      final ok = await _ch.invokeMethod('addTorrent', {
-        'filePath': filePath,
+      final ok = await _channel.invokeMethod<bool>('addTorrent', {
+        'torrentFilePath': torrentFilePath,
         'savePath': savePath,
         'seedMode': seedMode,
         'announce': announce,
@@ -42,78 +90,90 @@ class LibtorrentService {
         'enableTrackers': enableTrackers,
         'enablePeerExchange': enablePeerExchange,
       });
-      return ok == true;
-    } catch (e) {
-      debugPrint('[addTorrent] error: $e');
-      return false;
-    }
-  }
-
-  /// Create a torrent file and seed it; returns torrent name
-  Future<String?> createTorrentAndGetName(String filePath) async {
-    final tmpDir = await getTemporaryDirectory();
-    final torrentPath = p.join(tmpDir.path, '${p.basenameWithoutExtension(filePath)}.torrent');
-
-    final success = await _ch.invokeMethod('createTorrent', {
-      'filePath': filePath,
-      'outputPath': torrentPath,
-    });
-
-    if (success != true) return null;
-
-    final torrentName = p.basename(filePath);
-
-    // Add torrent (seed mode), DHT disabled for encrypted usage
-    await addTorrent(torrentPath, p.dirname(filePath), seedMode: true, enableDHT: false);
-
-    return torrentName;
-  }
-
-  /// Get all torrents as JSON-decoded list
-  Future<List<Map<String, dynamic>>> getAllTorrents() async {
-    try {
-      final raw = await _ch.invokeMethod<String>('getAllTorrents');
-      if (raw == null || raw.isEmpty) return [];
-
-      final decoded = jsonDecode(raw);
-
-      if (decoded is List) {
-        return decoded.whereType<Map<String, dynamic>>().toList();
-      }
-
-      if (decoded is Map<String, dynamic> && decoded.containsKey('torrents')) {
-        final torrents = decoded['torrents'];
-        if (torrents is List) {
-          return torrents.whereType<Map<String, dynamic>>().toList();
-        }
-      }
-
-      return [];
+      return ok ?? false;
     } catch (e, st) {
-      debugPrint('[getAllTorrents] error: $e\n$st');
-      return [];
-    }
-  }
-
-  /// Remove torrent by name
-  Future<bool> removeTorrentByName(String torrentName) async {
-    try {
-      final result = await _ch.invokeMethod('removeTorrentByName', {'torrentName': torrentName});
-      return result == true;
-    } catch (e) {
-      debugPrint('[removeTorrentByName] error: $e');
+      debugPrint('[LibtorrentService] addTorrent failed: $e\n$st');
       return false;
     }
   }
 
-  /// Get save path of a torrent by name
-  Future<String?> getTorrentSavePathByName(String torrentName) async {
+  /// (Optional) Same as above but returns the **info‑hash** immediately if
+  /// your native code provides it.  Not used by MusicSeederService right now.
+  Future<String?> addTorrentAndGetInfoHash(
+      String torrentFilePath,
+      String savePath, {
+        bool seedMode = false,
+        bool announce = false,
+      }) async {
     try {
-      final res = await _ch.invokeMethod<String>('getTorrentSavePathByName', {'torrentName': torrentName});
-      return res;
-    } catch (e) {
-      debugPrint('[getTorrentSavePathByName] error: $e');
+      final hash = await _channel.invokeMethod<String>('addTorrentReturnHash', {
+        'torrentFilePath': torrentFilePath,
+        'savePath': savePath,
+        'seedMode': seedMode,
+        'announce': announce,
+      });
+      return hash;
+    } catch (e, st) {
+      debugPrint('[LibtorrentService] addTorrentAndGetInfoHash failed: $e\n$st');
       return null;
+    }
+  }
+
+  /// Remove a torrent by its info‑hash;  `removeData=true` wipes local files.
+  Future<bool> removeTorrent(String infoHash, {bool removeData = false}) async {
+    try {
+      final ok = await _channel.invokeMethod<bool>('removeTorrent', {
+        'infoHash': infoHash,
+        'removeData': removeData,
+      });
+      return ok ?? false;
+    } catch (e, st) {
+      debugPrint('[LibtorrentService] removeTorrent failed: $e\n$st');
+      return false;
+    }
+  }
+
+  /*─────────────────────────────────────────*
+   *  (OPTIONAL)  BYTE‑BASED ADD / EXPORT    *
+   *─────────────────────────────────────────*/
+
+  /// Create a **.torrent file in memory** – useful if you plan to encrypt
+  /// the bytes (with CryptoHelper) and share over Supabase, WebRTC, etc.
+  Future<Uint8List?> createTorrentBytes(String sourcePath) async {
+    try {
+      print('[DEBUG] Calling native createTorrentBytes($sourcePath)');
+      final result = await _channel.invokeMethod<Uint8List>(
+        'createTorrentBytes',
+        {'sourcePath': sourcePath},
+      );
+      print('[DEBUG] Got result: ${result?.length ?? "null"} bytes');
+      return result;
+    } catch (e, st) {
+      print('[DEBUG] Native error: $e\n$st');
+      return null;
+    }
+  }
+
+
+
+  /// Add a torrent directly from raw bytes (after you decrypt them).
+  Future<bool> addTorrentFromBytes(
+      Uint8List torrentBytes,
+      String savePath, {
+        bool seedMode = false,
+        bool announce = false,
+      }) async {
+    try {
+      final ok = await _channel.invokeMethod<bool>('addTorrentFromBytes', {
+        'torrentBytes': torrentBytes,
+        'savePath': savePath,
+        'seedMode': seedMode,
+        'announce': announce,
+      });
+      return ok ?? false;
+    } catch (e, st) {
+      debugPrint('[LibtorrentService] addTorrentFromBytes failed: $e\n$st');
+      return false;
     }
   }
 }
