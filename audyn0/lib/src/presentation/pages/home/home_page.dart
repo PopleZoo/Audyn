@@ -18,6 +18,8 @@ import 'package:audyn/src/presentation/pages/home/views/playlists_view.dart';
 import 'package:audyn/src/presentation/pages/home/views/songs_view.dart';
 import 'package:audyn/src/presentation/widgets/player_bottom_app_bar.dart';
 
+import '../../../../widgets/login_bubble.dart';
+
 final FlutterAppAuth appAuth = FlutterAppAuth();
 
 class HomePage extends StatefulWidget {
@@ -124,21 +126,29 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   AppBar _buildAppBar() {
     return AppBar(
       backgroundColor: Themes.getTheme().primaryColor,
-      leading: IconButton(
-        icon: SvgPicture.asset(
-          Assets.menuSvg,
-          width: 32,
-          height: 32,
-          colorFilter: ColorFilter.mode(
-            Theme.of(context).textTheme.bodyMedium!.color!,
-            BlendMode.srcIn,
+      automaticallyImplyLeading: false,
+      title: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          IconButton(
+            icon: SvgPicture.asset(
+              Assets.menuSvg,
+              width: 32,
+              height: 32,
+              colorFilter: ColorFilter.mode(
+                Theme.of(context).textTheme.bodyMedium!.color!,
+                BlendMode.srcIn,
+              ),
+            ),
+            tooltip: 'Menu',
+            onPressed: () => scaffoldKey.currentState?.openDrawer(),
           ),
-        ),
-        tooltip: 'Menu',
-        onPressed: () => scaffoldKey.currentState?.openDrawer(),
+          const LoginBubble(),
+        ],
       ),
     );
   }
+
 
   Drawer _buildDrawer(BuildContext context) {
     return Drawer(

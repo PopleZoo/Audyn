@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
+import 'package:crypto/crypto.dart';
 
 /// A thin, Flutter‑side wrapper around the native libtorrent bridge.
 /// All heavy work happens in the platform (Android / iOS / desktop) code.
@@ -176,4 +177,25 @@ class LibtorrentService {
       return false;
     }
   }
+
+  Future<String?> getInfoHashFromBytes(Uint8List bytes) async {
+    try {
+      final hash = await _channel.invokeMethod<String>(
+        'getInfoHashFromBytes',
+        bytes,
+      );
+      if (hash != null && hash.isNotEmpty) return hash;
+    } on MissingPluginException {
+      debugPrint('[LibtorrentService] ► Native infoHash not available, using fallback.');
+    } catch (e, st) {
+      debugPrint('[LibtorrentService] getInfoHashFromBytes failed: $e\n$st');
+    }
+
+    // Dart fallback
+    final digest = sha1.convert(bytes);
+    final hex    = digest.toString();
+    debugPrint('[LibtorrentService] ► Fallback SHA‑1 infoHash = $hex');
+    return hex;
+  }
+
 }

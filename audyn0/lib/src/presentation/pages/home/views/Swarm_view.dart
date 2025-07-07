@@ -1,19 +1,21 @@
 // lib/src/presentation/pages/home/views/Swarm_view.dart
+
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:flutter_media_metadata/flutter_media_metadata.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../../services/music_seeder_service.dart';
 import '../../../../../utils/CryptoHelper.dart';
 import '../../../../data/services/LibtorrentService.dart';
-import 'package:flutter_media_metadata/flutter_media_metadata.dart';
 
-/*─────────────────────────────────────────────────────────────*
-│  SwarmView – nicer tiles + dialog                            │
-*─────────────────────────────────────────────────────────────*/
+const bool kDebugSwarmSupabase = true; // Set to false in production
+
 class SwarmView extends StatefulWidget {
   const SwarmView({Key? key}) : super(key: key);
 
@@ -22,48 +24,77 @@ class SwarmView extends StatefulWidget {
 }
 
 class _SwarmViewState extends State<SwarmView> {
-  /* services */
   final _libtorrent = LibtorrentService();
   final _seeder     = MusicSeederService();
 
-  /* data cache */
-  final _metaCache  = <String, Map<String, dynamic>>{};
-  final _torrents   = <Map<String, dynamic>>[];
-  var   _filtered   = <Map<String, dynamic>>[];
-  var   _vault      = <String, List<String>>{};
+  final _metaCache = <String, Map<String, dynamic>>{};
+  final _torrents  = <Map<String, dynamic>>[];
+  var   _filtered  = <Map<String, dynamic>>[];
+  var   _vault     = <String, List<String>>{};
 
-  /* ui‑state */
   var _isLoading = true;
   var _isError   = false;
   var _search    = '';
 
+
   @override
   void initState() {
     super.initState();
-    _loadOnce();
+    _refresh();
   }
 
-  /* ───────────────────── load session once ───────────────────── */
+  Future<void> _refresh() async {
+    setState(() {
+      _isLoading = true;
+      _isError = false;
+      _torrents.clear();
+      _filtered.clear();
+      _metaCache.clear();
+    });
 
-  Future<void> _loadOnce() async {
     try {
       await _seeder.init();
+
+      // Capture newly created torrent file paths from seeding
+      final newlySeeded = await _seeder.seedMissingSongs();
+      debugPrint('[SwarmView] Seeded ${newlySeeded.length} new torrents');
+
+      // Index vault files after seeding
       _vault = await _indexVault();
 
-      final cacheDir  = _seeder.torrentsDir!;
-      final session   = await _libtorrent.getAllTorrents();
+      // Auto-add and upload newly seeded torrents to libtorrent and Supabase
+      for (final path in newlySeeded) {
+        final name = p.basenameWithoutExtension(path.replaceAll('.audyn.torrent', ''));
+        final norm = MusicSeederService.norm(name);
+
+        // Compose minimal torrent map for _addLocalEncrypted
+        final torrent = {
+          'name': name,
+          'vault_files': [path],
+        };
+
+        // Add and upload each new torrent
+        await _addLocalEncrypted(torrent);
+      }
+
+      // Load current torrents from libtorrent session
+      final session = await _libtorrent.getAllTorrents();
+      debugPrint('[SwarmView] Loaded ${session.length} torrents');
 
       for (final t in session) {
-        final enriched = await _enrichTorrent(t, cacheDir);
+        final enriched = await _enrichTorrent(t);
         if (enriched != null) _torrents.add(enriched);
       }
+
       _applySearch(notify: false);
     } catch (e, st) {
-      debugPrint('[SwarmView] load error: $e\n$st');
+      debugPrint('[SwarmView] refresh error: $e\n$st');
       _isError = true;
     }
+
     if (mounted) setState(() => _isLoading = false);
   }
+
 
   Future<Map<String, List<String>>> _indexVault() async {
     final base = await getApplicationDocumentsDirectory();
@@ -73,97 +104,79 @@ class _SwarmViewState extends State<SwarmView> {
     final out = <String, List<String>>{};
     await for (final f in dir.list(recursive: true)) {
       if (f is! File || !f.path.endsWith('.audyn.torrent')) continue;
-      final name = p.basenameWithoutExtension(f.path.replaceAll('.audyn',''));
+      final name = p.basenameWithoutExtension(f.path.replaceAll('.audyn', ''));
       out.putIfAbsent(name, () => []).add(f.path);
     }
     return out;
   }
-  Future<Map<String, dynamic>?> _enrichTorrent(
-      Map<String, dynamic> t, Directory cacheDir) async {
 
-    final name = (t['name'] ?? '').toString();
+  Future<Map<String, dynamic>?> _enrichTorrent(Map<String, dynamic> t) async {
+    final name = t['name']?.toString() ?? '';
     if (name.isEmpty) return null;
+    final norm = MusicSeederService.norm(name);
 
-    /* 1. keep local .torrent cache … unchanged … */
-
-    /* 2. memoised metadata -------------------------------------------- */
-    if (!_metaCache.containsKey(name)) {
+    if (!_metaCache.containsKey(norm)) {
       final m = await _seeder.getMetadataForName(name);
-
-      String resolveArtist() {
-        final lst = t['artistnames'];
-        if (lst is List && lst.isNotEmpty) return lst.join(', ');
-        final author = t['author']?.toString() ?? '';
-        if (author.isNotEmpty) return author;
-        final parts = name.split(' - ');
-        return parts.isNotEmpty ? parts[0] : 'Unknown Artist';
-      }
-
-      _metaCache[name] = {
-        'title'  : (m?['title']  ?? name).toString(),
-        'artist' : (m?['artist'] ?? resolveArtist()).toString(),
-        'album'  : (m?['album']  ?? '').toString(),
-        'art'    : m?['albumArt'],          // might be null, fill below
+      _metaCache[norm] = {
+        'title'       : (m?['title']       ?? name).toString(),
+        'artist'      : (m?['artist']      ?? 'Unknown Artist').toString(),
+        'artistnames' : (m?['artistnames'] ?? []),
+        'album'       : (m?['album']       ?? 'Unknown').toString(),
+        'art'         : m?['albumArt'],
       };
     }
 
-    /* 3.  try to fill missing album‑art on‑demand ---------------------- */
-    if (_metaCache[name]!['art'] == null) {
-      // Assume single‑file torrent: <save_path>/<name>
-      final baseDir   = t['save_path']?.toString() ?? '';
+
+    // On-demand load album art
+    if (_metaCache[norm]!['art'] == null) {
+      final baseDir = t['save_path']?.toString() ?? '';
       final candidate = File(p.join(baseDir, name));
       if (await candidate.exists()) {
         try {
           final meta = await MetadataRetriever.fromFile(candidate);
           if (meta.albumArt != null) {
-            _metaCache[name]!['art'] = meta.albumArt;
+            _metaCache[norm]!['art'] = meta.albumArt;
           }
-        } catch (_) {/* ignore – leave art null */}
+        } catch (_) {}
       }
     }
 
-    /* 4. return enriched map ------------------------------------------ */
     return {
       ...t,
-      ..._metaCache[name]!,
-      'vault_files': _vault[name] ?? [],
+      ..._metaCache[norm]!,
+      'vault_files': _vault[norm] ?? [],
     };
   }
 
-
-  /* search filter */
   void _applySearch({bool notify = true}) {
     final q = _search.trim().toLowerCase();
     _filtered = _torrents.where((t) {
       bool hit(String? s) => s?.toLowerCase().contains(q) ?? false;
-      return hit(t['name']) ||
-          hit(t['title'])||
-          hit(t['artist'])||
-          hit(t['album']);
+      return hit(t['name']) || hit(t['title']) ||
+          hit(t['artist']) || hit(t['album']);
     }).toList();
-    if (notify && mounted) setState((){});
+
+    if (notify && mounted) setState(() {});
   }
 
-  /* ───────────────────── tile & dialog helpers ───────────────────── */
-
   Widget buildTorrentTile(Map<String, dynamic> t, ThemeData th) {
-    // ── SAFE lookup ──────────────────────────────────────────────
-    final localFiles = (t['vault_files'] as List?) ?? const <String>[];
-    final isLocal    = localFiles.isNotEmpty;
-    final isSeeding  = (t['seed_mode'] == true) || (t['state'] == 5);
+    final isLocal   = (t['vault_files'] as List?)?.isNotEmpty ?? false;
+    final isSeeding = (t['seed_mode'] == true) || (t['state'] == 5);
 
     return ListTile(
       leading: t['art'] != null
           ? Image.memory(t['art'], width: 50, height: 50, fit: BoxFit.cover)
           : const Icon(Icons.music_note, size: 32, color: Colors.white38),
-
-      title: Text(t['title']?.toString() ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(t['artist']?.toString() ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
-
+      title: Text(t['title'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        (t['artistnames'] as List?)?.join(', ') ?? t['artist'] ?? 'Unknown',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
       trailing: Icon(
-        isLocal   ? Icons.check_circle
+        isLocal ? Icons.check_circle
             : isSeeding ? Icons.cloud_upload : Icons.cloud_download,
-        color: isLocal   ? th.colorScheme.secondary
+        color: isLocal ? th.colorScheme.secondary
             : isSeeding ? th.colorScheme.primary
             : Colors.white38,
       ),
@@ -173,12 +186,11 @@ class _SwarmViewState extends State<SwarmView> {
 
   void showTorrentDialog(Map<String, dynamic> t, ThemeData th) {
     final vaultFiles = (t['vault_files'] as List<String>?) ?? [];
-    final playlists  = t['playlists'] as List<String>? ?? [];
     final artBytes   = t['art'];
 
-    final isSeeding  = t['state'] == 5 || t['seed_mode'] == true;
-    final isLocal    = isSeeding || vaultFiles.isNotEmpty;
-    final savePath   = t['save_path']?.toString();
+    final isSeeding = t['state'] == 5 || t['seed_mode'] == true;
+    final isLocal   = isSeeding || vaultFiles.isNotEmpty;
+    final savePath  = t['save_path']?.toString();
 
     showDialog(
       context: context,
@@ -186,47 +198,31 @@ class _SwarmViewState extends State<SwarmView> {
         contentPadding: const EdgeInsets.all(16),
         content: SingleChildScrollView(
           child: Column(
-            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              // ── Cover Art ──────────────────────────────────────
               if (artBytes is Uint8List)
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
-                  child: Image.memory(
-                    artBytes,
-                    width: 120,
-                    height: 120,
-                    fit: BoxFit.cover,
-                  ),
+                  child: Image.memory(artBytes, width: 120, height: 120, fit: BoxFit.cover),
                 )
               else
                 const Icon(Icons.music_note, size: 100, color: Colors.white38),
 
               const SizedBox(height: 12),
-
-              // ── Metadata ───────────────────────────────────────
               Text(
-                t['title']?.toString() ?? 'Unknown',
+                t['title'] ?? 'Unknown',
                 style: th.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
-                maxLines: 2,
                 textAlign: TextAlign.center,
-                overflow: TextOverflow.ellipsis,
               ),
               const SizedBox(height: 4),
               Text(
-                'Artist: ${t['artist'] ?? 'Unknown'}',
+                'Artist: ${(t['artistnames'] as List?)?.join(', ') ?? t['artist'] ?? 'Unknown'}',
                 textAlign: TextAlign.center,
               ),
               if ((t['album']?.toString().isNotEmpty ?? false))
-                Text(
-                  'Album: ${t['album']}',
-                  textAlign: TextAlign.center,
-                ),
-
+                Text('Album: ${t['album']}', textAlign: TextAlign.center),
               const SizedBox(height: 12),
 
-              // ── Local Status ───────────────────────────────────
               Chip(
                 label: Text(isLocal ? 'Stored locally' : 'Remote only'),
                 backgroundColor: isLocal
@@ -234,53 +230,21 @@ class _SwarmViewState extends State<SwarmView> {
                     : Colors.grey.shade800,
               ),
 
-              // ── Storage Paths ─────────────────────────────────
               if (isLocal) ...[
                 const SizedBox(height: 10),
-                Text(
-                  'Storage location${(vaultFiles.length > 1 || savePath != null) ? 's' : ''}:',
-                  style: th.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.bold),
-                  textAlign: TextAlign.center,
-                ),
+                Text('Storage location${vaultFiles.length > 1 || savePath != null ? 's' : ''}:',
+                    style: th.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 4),
-
-                // Vault file paths (if any)
                 for (final path in vaultFiles)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Text(
-                      path,
-                      style: th.textTheme.bodySmall?.copyWith(color: Colors.white70),
-                      textAlign: TextAlign.center,
-                    ),
+                    child: Text(path, style: th.textTheme.bodySmall?.copyWith(color: Colors.white70)),
                   ),
-
-                // Seeding path (if not in vault)
                 if (vaultFiles.isEmpty && savePath != null)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Text(
-                      savePath,
-                      style: th.textTheme.bodySmall?.copyWith(color: Colors.white70),
-                      textAlign: TextAlign.center,
-                    ),
+                    child: Text(savePath, style: th.textTheme.bodySmall?.copyWith(color: Colors.white70)),
                   ),
-              ],
-
-              // ── Playlists ─────────────────────────────────────
-              if (playlists.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                Text(
-                  'Playlists:',
-                  style: th.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.bold),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 6),
-                Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 6,
-                  children: playlists.map((pl) => Chip(label: Text(pl))).toList(),
-                ),
               ],
             ],
           ),
@@ -304,37 +268,91 @@ class _SwarmViewState extends State<SwarmView> {
     );
   }
 
-
-
-
-
-  Future<void> _addLocalEncrypted(Map<String,dynamic> t) async {
+  Future<void> _addLocalEncrypted(Map<String, dynamic> t) async {
     final encPath = (t['vault_files'] as List?)?.first;
-    if (encPath == null) return; // or handle error
+    if (encPath == null) return;
+
     try {
       final bytes = await File(encPath).readAsBytes();
       final plain = CryptoHelper.decryptBytes(bytes);
-      if (plain==null || plain.isEmpty) throw 'decrypt failed';
+      if (plain == null || plain.isEmpty) throw 'Decrypt failed';
 
-      final dir   = await getApplicationDocumentsDirectory();
-      final ok    = await _libtorrent.addTorrentFromBytes(
-          plain, dir.path, seedMode:false);
-      if (!ok) throw 'native add failed';
+      final dir = await getApplicationDocumentsDirectory();
+      final ok = await _libtorrent.addTorrentFromBytes(plain, dir.path, seedMode: true);
+      if (!ok) throw 'Failed to add torrent to session';
 
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content:Text('Added “${t['title']}”.')));
+      // Get info-hash
+      final infoHash = await _libtorrent.getInfoHashFromBytes(plain);
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user == null || infoHash == null) throw 'User not signed in or infoHash missing';
+
+      // Fetch public IP
+      final ip = await _getPublicIp();
+      if (ip == null) throw 'Could not determine IP';
+      final ipEnc = base64Encode(CryptoHelper.encryptBytes(utf8.encode(ip)));
+
+      // Insert into `torrents` table first (to satisfy FK constraint)
+      await Supabase.instance.client.from('torrents').upsert({
+        'info_hash': infoHash,
+        'name': t['title'] ?? 'Unknown',
+        'created_at': DateTime.now().toIso8601String(),
+      });
+
+      // Insert into `seeder_peers` table
+      final payload = {
+        'user_id': user.id,
+        'info_hash': infoHash,
+        'ip_enc': ipEnc,
+        'last_seen': DateTime.now().toIso8601String(),
+      };
+
+      if (kDebugSwarmSupabase) {
+        debugPrint('[SwarmView] Upserting → seeder_peers: $payload');
       }
-    } catch (e,st) {
-      debugPrint('[SwarmView] add error $e\n$st');
+
+      final response = await Supabase.instance.client
+          .from('seeder_peers')
+          .upsert(payload)
+          .select();
+
+      if (kDebugSwarmSupabase) {
+        debugPrint('[SwarmView] Supabase response: $response');
+      }
+
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content:Text('Error: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Added “${t['title']}” and synced with swarm.')),
+        );
+      }
+    } catch (e, st) {
+      debugPrint('[SwarmView] _addLocalEncrypted error: $e\n$st');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error adding torrent: $e')),
+        );
       }
     }
   }
 
-  /* ───────────────────── ui build ───────────────────── */
+
+
+
+  Future<String?> _getPublicIp() async {
+    try {
+      final client = HttpClient();
+      final request = await client.getUrl(Uri.parse('https://api.ipify.org'));
+      final response = await request.close();
+      if (response.statusCode == 200) {
+        final ip = await response.transform(utf8.decoder).join();
+        return ip.trim();
+      }
+      return null;
+    } catch (e) {
+      debugPrint('[SwarmView] Failed to get public IP: $e');
+      return null;
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -343,42 +361,51 @@ class _SwarmViewState extends State<SwarmView> {
       backgroundColor: th.colorScheme.surface,
       appBar: AppBar(
         title: const Text('Audyn Swarm'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _isLoading ? null : _refresh,
+          )
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
           child: Padding(
             padding: const EdgeInsets.all(8),
             child: TextField(
               decoration: InputDecoration(
-                hintText:'Search torrents…',
+                hintText: 'Search torrents…',
                 prefixIcon: const Icon(Icons.search),
-                filled:true,
+                filled: true,
                 fillColor: Colors.white12,
                 border: OutlineInputBorder(
-                    borderRadius:BorderRadius.circular(22),
-                    borderSide:BorderSide.none),
-                contentPadding:const EdgeInsets.symmetric(vertical:10),
+                  borderRadius: BorderRadius.circular(22),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: const EdgeInsets.symmetric(vertical: 10),
               ),
-              style: th.textTheme.bodyMedium?.copyWith(color:Colors.white70),
-              onChanged:(v){ _search=v; _applySearch(); },
+              style: th.textTheme.bodyMedium?.copyWith(color: Colors.white70),
+              onChanged: (v) {
+                _search = v;
+                _applySearch();
+              },
             ),
           ),
         ),
       ),
       body: _isLoading
-          ? const Center(child:CircularProgressIndicator())
+          ? const Center(child: CircularProgressIndicator())
           : _isError
-          ? Center(child:Text('Failed to load torrents.',
-          style: th.textTheme.bodyMedium
-              ?.copyWith(color:th.colorScheme.error)))
+          ? Center(child: Text('Failed to load torrents.', style: th.textTheme.bodyMedium?.copyWith(color: th.colorScheme.error)))
           : _filtered.isEmpty
-          ? Center(child:Text('No torrents found.',
-          style: th.textTheme.titleMedium
-              ?.copyWith(color: Colors.white54)))
-          : ListView.separated(
-        itemCount: _filtered.length,
-        separatorBuilder: (_,__) =>
-        const Divider(height:1, color:Colors.white12),
-        itemBuilder: (_,i) => buildTorrentTile(_filtered[i], th),
+          ? Center(child: Text('No torrents found.', style: th.textTheme.titleMedium?.copyWith(color: Colors.white54)))
+          : RefreshIndicator(
+        onRefresh: _refresh,
+        child: ListView.separated(
+          physics: const AlwaysScrollableScrollPhysics(),
+          itemCount: _filtered.length,
+          separatorBuilder: (_, __) => const Divider(height: 1, color: Colors.white12),
+          itemBuilder: (_, i) => buildTorrentTile(_filtered[i], th),
+        ),
       ),
     );
   }

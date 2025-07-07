@@ -38,6 +38,7 @@ dependencies:
   supabase_flutter: ^2.9.1 #intergration with supabase for storage of hashes and metadata
   flutter_appauth: ^9.0.1  #supabase link processing
   encrypt: ^5.0.3 #secure and encrypt data
+  flutter_dotenv: ^5.1.0 #used in supabase_client
 
 dev_dependencies:
   flutter_test:
@@ -52,3 +53,4 @@ flutter:
     - assets/lottie/
     - assets/images/
     - assets/svg/
+    - assets/env/.env

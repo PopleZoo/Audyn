@@ -1,46 +1,55 @@
-import 'package:audyn/src/bloc/Downloads/DownloadsBloc.dart';
-import 'package:audyn/src/data/repositories/player_repository.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:workmanager/workmanager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+// App & Core
 import 'package:audyn/src/app.dart';
-import 'package:audyn/src/bloc/favorites/favorites_bloc.dart';
-import 'package:audyn/src/bloc/home/home_bloc.dart';
-import 'package:audyn/src/bloc/player/player_bloc.dart';
-import 'package:audyn/src/bloc/playlists/playlists_cubit.dart';
-import 'package:audyn/src/bloc/recents/recents_bloc.dart';
-import 'package:audyn/src/bloc/scan/scan_cubit.dart';
-import 'package:audyn/src/bloc/search/search_bloc.dart';
-import 'package:audyn/src/bloc/song/song_bloc.dart';
-import 'package:audyn/src/bloc/theme/theme_bloc.dart';
 import 'package:audyn/src/core/di/service_locator.dart';
 import 'package:audyn/src/data/services/hive_box.dart';
 import 'package:audyn/services/music_seeder_service.dart';
+import 'client_supabase.dart';
+
+// Bloc Imports
+import 'package:audyn/src/bloc/theme/theme_bloc.dart';
+import 'package:audyn/src/bloc/home/home_bloc.dart';
+import 'package:audyn/src/bloc/song/song_bloc.dart';
+import 'package:audyn/src/bloc/player/player_bloc.dart';
+import 'package:audyn/src/bloc/favorites/favorites_bloc.dart';
+import 'package:audyn/src/bloc/recents/recents_bloc.dart';
+import 'package:audyn/src/bloc/search/search_bloc.dart';
+import 'package:audyn/src/bloc/scan/scan_cubit.dart';
+import 'package:audyn/src/bloc/playlists/playlists_cubit.dart';
+import 'package:audyn/src/bloc/Downloads/DownloadsBloc.dart';
+import 'package:audyn/src/data/repositories/player_repository.dart';
 
 Future<void> main() async {
+  // Ensure Flutter engine is initialized
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Setup dependency injection
+  // Load environment variables from .env
+  await dotenv.load(fileName: "assets/env/.env");
+
+  // Initialize Supabase
+  await SupabaseClientService().init();
+
+  // Setup Dependency Injection
   init();
 
   // Initialize Hive for local storage
   await Hive.initFlutter();
   await Hive.openBox(HiveBox.boxName);
 
-  // Initialize Music Player
+  // Initialize the Music Player
   await sl<MusicPlayer>().init();
 
-  // Initialize background workmanager
-  Workmanager().initialize(
-    callbackDispatcher,
-    isInDebugMode: false,
-  );
+  // Initialize background work manager
+  Workmanager().initialize(callbackDispatcher, isInDebugMode: false);
 
-  // Register periodic task
+  // Schedule background seeding task
   Workmanager().registerPeriodicTask(
     'periodicMusicSeeding',
     'seedMissingSongs',
@@ -52,18 +61,18 @@ Future<void> main() async {
     ),
   );
 
-  // Request permissions (media)
+  // Request necessary media permissions
   await _requestMediaPermissions();
 
-  // Run the app
+  // Launch the app
   runApp(
     MultiBlocProvider(
       providers: [
-        BlocProvider(create: (_) => sl<HomeBloc>()),
         BlocProvider(create: (_) => sl<ThemeBloc>()),
+        BlocProvider(create: (_) => sl<HomeBloc>()),
         BlocProvider(create: (_) => sl<SongBloc>()),
-        BlocProvider(create: (_) => sl<FavoritesBloc>()),
         BlocProvider(create: (_) => sl<PlayerBloc>()),
+        BlocProvider(create: (_) => sl<FavoritesBloc>()),
         BlocProvider(create: (_) => sl<RecentsBloc>()),
         BlocProvider(create: (_) => sl<SearchBloc>()),
         BlocProvider(create: (_) => sl<ScanCubit>()),
@@ -76,30 +85,17 @@ Future<void> main() async {
 }
 
 Future<void> _requestMediaPermissions() async {
-  // Android 13+ requires this permission
-  if (await Permission.audio.isGranted) return;
+  final audioGranted = await Permission.audio.isGranted;
 
-  Map<Permission, PermissionStatus> statuses;
+  if (audioGranted) return;
 
-  if (await Permission.manageExternalStorage.isGranted ||
-      await Permission.audio.isGranted ||
-      await Permission.storage.isGranted) {
-    return;
-  }
+  final permissionsToRequest = [
+    Permission.audio,
+    Permission.storage,
+    Permission.manageExternalStorage,
+  ];
 
-  // Request permissions based on Android version
-  if (await Permission.manageExternalStorage.isDenied) {
-    statuses = await [
-      Permission.manageExternalStorage,
-      Permission.audio,
-      Permission.storage,
-    ].request();
-  } else {
-    statuses = await [
-      Permission.audio,
-      Permission.storage,
-    ].request();
-  }
+  final statuses = await permissionsToRequest.request();
 
   if (statuses.values.any((status) => status.isGranted)) {
     debugPrint("✅ Permissions granted.");
@@ -108,16 +104,15 @@ Future<void> _requestMediaPermissions() async {
   }
 }
 
-
 @pragma('vm:entry-point')
 void callbackDispatcher() {
   Workmanager().executeTask((task, inputData) async {
     if (task == 'seedMissingSongs') {
       try {
         final prefs = await SharedPreferences.getInstance();
-        final consent = prefs.getBool('disclaimerAccepted') ?? false;
+        final accepted = prefs.getBool('disclaimerAccepted') ?? false;
 
-        if (!consent) {
+        if (!accepted) {
           debugPrint('[Workmanager] Disclaimer not accepted, skipping.');
           return true;
         }
@@ -127,8 +122,8 @@ void callbackDispatcher() {
         await seeder.seedMissingSongs();
 
         debugPrint('[Workmanager] Successfully seeded missing songs.');
-      } catch (e, stack) {
-        debugPrint('[Workmanager] Error during seeding: $e\n$stack');
+      } catch (e, stackTrace) {
+        debugPrint('[Workmanager] Error during seeding: $e\n$stackTrace');
       }
     }
     return true;
