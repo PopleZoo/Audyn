@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -29,11 +30,21 @@ class _AccountPageState extends State<AccountPage> {
 
   List<Map<String, dynamic>> _localTorrents = [];
   List<Map<String, dynamic>> _seededTorrents = [];
-  Map<String, Map<String, dynamic>> _metaCache = {};
+  Map<String, Map<String, dynamic>> _metaCache = {}; // Keyed by torrent name or info_hash
 
   SupabaseClient get _sb => Supabase.instance.client;
 
-  /* ───────────────── AUTH HELPERS ───────────────── */
+  @override
+  void initState() {
+    super.initState();
+    final user = _sb.auth.currentUser;
+    if (user != null) {
+      _loadUserTorrents(user.id);
+      _scanLocalTorrents();
+    }
+  }
+
+  /* ────────────── AUTH ────────────── */
 
   Future<void> _signIn() async {
     setState(() {
@@ -93,7 +104,7 @@ class _AccountPageState extends State<AccountPage> {
     });
   }
 
-  /* ──────────────── LOCAL TORRENTS SCAN ──────────────── */
+  /* ────────────── LOCAL TORRENTS ────────────── */
 
   Future<void> _scanLocalTorrents() async {
     setState(() {
@@ -123,7 +134,6 @@ class _AccountPageState extends State<AccountPage> {
       final List<Map<String, dynamic>> enriched = [];
       for (final file in files) {
         final name = p.basenameWithoutExtension(file.path.replaceAll('.audyn', ''));
-        // Load metadata cache or fetch
         if (!_metaCache.containsKey(name)) {
           final m = await _seeder.getMetadataForName(name);
           _metaCache[name] = {
@@ -132,6 +142,7 @@ class _AccountPageState extends State<AccountPage> {
             'album': (m?['album'] ?? 'Unknown').toString(),
             'art': m?['albumArt'],
             'file_path': file.path,
+            'info_hash': null, // Could fill if you want
           };
         }
         enriched.add(_metaCache[name]!);
@@ -150,7 +161,7 @@ class _AccountPageState extends State<AccountPage> {
     }
   }
 
-  /* ──────────────── LOAD SEEDED TORRENTS FROM SUPABASE ──────────────── */
+  /* ────────────── SEEDED TORRENTS ────────────── */
 
   Future<void> _loadUserTorrents(String userId) async {
     setState(() {
@@ -167,8 +178,48 @@ class _AccountPageState extends State<AccountPage> {
       final List<Map<String, dynamic>> torrents =
       data.cast<Map<String, dynamic>>();
 
+      // Fetch metadata for each seeded torrent's info_hash from torrents table
+      final List<Map<String, dynamic>> enriched = [];
+      for (final t in torrents) {
+        final infoHash = t['info_hash'] as String;
+        if (_metaCache.containsKey(infoHash)) {
+          enriched.add(_metaCache[infoHash]!);
+        } else {
+          // Query the torrents table to get metadata by info_hash
+          final List<dynamic> metaDataList = await _sb
+              .from('torrents')
+              .select()
+              .eq('info_hash', infoHash)
+              .limit(1);
+
+          if (metaDataList.isNotEmpty) {
+            final metaData = metaDataList.first as Map<String, dynamic>;
+            // Cache it keyed by infoHash
+            _metaCache[infoHash] = {
+              'title': metaData['name'] ?? 'Unknown',
+              'artist': metaData['artist'] ?? 'Unknown Artist',
+              'album': metaData['album'] ?? 'Unknown',
+              'art': metaData['album_art'] != null
+                  ? base64Decode(metaData['album_art'])
+                  : null,
+              'info_hash': infoHash,
+            };
+            enriched.add(_metaCache[infoHash]!);
+          } else {
+            // Fallback to showing just the hash if no metadata found
+            enriched.add({
+              'title': 'Unknown',
+              'artist': 'Unknown Artist',
+              'album': 'Unknown',
+              'art': null,
+              'info_hash': infoHash,
+            });
+          }
+        }
+      }
+
       setState(() {
-        _seededTorrents = torrents;
+        _seededTorrents = enriched;
         _busy = false;
       });
     } catch (e, st) {
@@ -180,18 +231,7 @@ class _AccountPageState extends State<AccountPage> {
     }
   }
 
-
-  /* ──────────────── UI ──────────────── */
-
-  @override
-  void initState() {
-    super.initState();
-    final user = _sb.auth.currentUser;
-    if (user != null) {
-      _loadUserTorrents(user.id);
-      _scanLocalTorrents();
-    }
-  }
+  /* ────────────── UI ────────────── */
 
   @override
   Widget build(BuildContext context) {
@@ -276,22 +316,28 @@ class _AccountPageState extends State<AccountPage> {
 
         const SizedBox(height: 24),
 
-        // Seeded torrents from Supabase
+        // Seeded torrents
         Text('Your seeded torrents', style: th.textTheme.titleMedium),
         const SizedBox(height: 8),
-        _seededTorrents.isEmpty
+        _busy
+            ? const Center(child: CircularProgressIndicator())
+            : _seededTorrents.isEmpty
             ? const Text('No torrents seeded yet')
             : Expanded(
           child: ListView.separated(
             itemCount: _seededTorrents.length,
             separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (_, i) {
-              final hash = _seededTorrents[i]['info_hash'] as String;
+              final t = _seededTorrents[i];
               return ListTile(
-                title: Text(hash, maxLines: 1, overflow: TextOverflow.ellipsis),
+                leading: t['art'] != null
+                    ? Image.memory(t['art'], width: 50, height: 50, fit: BoxFit.cover)
+                    : const Icon(Icons.music_note, size: 32, color: Colors.white38),
+                title: Text(t['title'] ?? t['info_hash'] ?? 'Unknown', maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text(t['artist'] ?? 'Unknown Artist', maxLines: 1, overflow: TextOverflow.ellipsis),
                 trailing: IconButton(
                   icon: const Icon(Icons.delete_outline),
-                  onPressed: () => _deleteSeededTorrent(user.id, hash),
+                  onPressed: () => _deleteSeededTorrent(user.id, t['info_hash']),
                 ),
               );
             },
@@ -340,7 +386,9 @@ class _AccountPageState extends State<AccountPage> {
     }
   }
 
-  Future<void> _deleteSeededTorrent(String userId, String infoHash) async {
+  Future<void> _deleteSeededTorrent(String userId, String? infoHash) async {
+    if (infoHash == null) return;
+
     try {
       final res = await _sb
           .from('seeder_peers')
@@ -369,6 +417,4 @@ class _AccountPageState extends State<AccountPage> {
       }
     }
   }
-
-
 }

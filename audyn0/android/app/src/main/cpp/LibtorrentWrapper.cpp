@@ -22,7 +22,9 @@
 #include <libtorrent/file_storage.hpp>
 #include <sys/stat.h>
 #include <future>
-
+#include <jni.h>
+#include <libtorrent/torrent_handle.hpp>
+#include <libtorrent/sha1_hash.hpp>
 
 #define  LOG_TAG  "LibtorrentWrapper"
 #define  LOGI(...)  ((void)__android_log_print(ANDROID_LOG_INFO ,LOG_TAG,__VA_ARGS__))
@@ -34,6 +36,7 @@ using lt::torrent_flags::paused;
 using lt::torrent_flags::disable_dht;
 using lt::torrent_flags::disable_lsd;
 using lt::torrent_flags::disable_pex;
+
 
 // ─────────────────────────  globals  ──────────────────────────
 static std::unique_ptr<session> g_ses;
@@ -534,4 +537,37 @@ Java_com_example_audyn_LibtorrentWrapper_addTorrentFromBytes
     env->ReleaseStringUTFChars(jSavePath, save);
     return ok ? JNI_TRUE : JNI_FALSE;
 }
+extern libtorrent::session* g_session;
+
+extern "C"
+lt::sha1_hash hex_to_sha1(const std::string& hex) {
+    lt::sha1_hash hash;
+    for (int i = 0; i < 20; ++i) {
+        std::string byteString = hex.substr(i * 2, 2);
+        hash[i] = static_cast<unsigned char>(std::stoul(byteString, nullptr, 16));
+    }
+    return hash;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_example_audyn_LibtorrentWrapper_isTorrentActive(JNIEnv *env, jobject thiz, jstring j_info_hash) {
+    const char *info_hash_str = env->GetStringUTFChars(j_info_hash, nullptr);
+    std::string hashStr(info_hash_str ? info_hash_str : "");
+    env->ReleaseStringUTFChars(j_info_hash, info_hash_str);
+
+    if (hashStr.length() != 40) {
+        LOGE("Invalid infoHash length: %s", hashStr.c_str());
+        return JNI_FALSE;
+    }
+
+    lt::sha1_hash hash = hex_to_sha1(hashStr);
+
+    std::lock_guard<std::mutex> lk(g_mtx);
+    if (!g_ses) return JNI_FALSE;
+
+    auto handle = g_ses->find_torrent(hash);
+    bool isActive = handle.is_valid() && !handle.status().paused;
+    return isActive ? JNI_TRUE : JNI_FALSE;
+}
+
 } // extern "C"

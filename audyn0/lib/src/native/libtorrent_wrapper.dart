@@ -42,6 +42,7 @@ class LibtorrentWrapper {
     }
   }
 
+
   /// Adds a torrent from raw torrent file bytes directly.
   static Future<bool> addTorrentFromBytes(
       Uint8List torrentBytes, {

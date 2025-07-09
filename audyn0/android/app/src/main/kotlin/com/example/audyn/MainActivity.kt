@@ -212,6 +212,24 @@ class MainActivity : AudioServiceFragmentActivity() {
                             .onFailure { e -> result.error("ERROR", e.localizedMessage, null) }
                     }
 
+                    "isTorrentActive" -> {
+                        val infoHash = when (val arg = call.arguments) {
+                            is String -> arg
+                            is Map<*, *> -> arg["infoHash"] as? String
+                            else -> null
+                        }
+
+                        if (infoHash.isNullOrEmpty()) {
+                            result.error("INVALID_ARGUMENT", "infoHash is required", null)
+                            return@setMethodCallHandler
+                        }
+
+                        runCatching {
+                            libtorrentWrapper.isTorrentActive(infoHash)
+                        }.onSuccess(result::success)
+                            .onFailure { e -> result.error("ERROR", e.localizedMessage, null) }
+                    }
+
                     /*───────────────────────────────*
                      *  FALLBACK
                      *───────────────────────────────*/

@@ -68,6 +68,8 @@ class LibtorrentWrapper(private val context: Context) {
         enablePeerExchange: Boolean
     ): Boolean
 
+    external fun isTorrentActive(infoHash: String): Boolean
+
 
     /* ────────────── Kotlin-only helper ────────────── */
 

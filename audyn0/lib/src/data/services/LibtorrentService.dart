@@ -155,8 +155,6 @@ class LibtorrentService {
     }
   }
 
-
-
   /// Add a torrent directly from raw bytes (after you decrypt them).
   Future<bool> addTorrentFromBytes(
       Uint8List torrentBytes,
@@ -198,4 +196,50 @@ class LibtorrentService {
     return hex;
   }
 
+  /// Get torrent list and enrich each torrent map with metadata.
+  ///
+  /// The [metadataFetcher] is a callback function you provide that takes a
+  /// torrent name and returns a Future<Map<String, dynamic>?> containing
+  /// metadata fields like 'title', 'artist', 'album', 'art', etc.
+  ///
+  /// If metadataFetcher returns null, the torrent map is returned as is.
+  Future<List<Map<String, dynamic>>> getTorrentList({
+    required Future<Map<String, dynamic>?> Function(String torrentName) metadataFetcher,
+  }) async {
+    final torrents = await getAllTorrents();
+
+    List<Map<String, dynamic>> enriched = [];
+    for (final torrent in torrents) {
+      final name = torrent['name']?.toString() ?? '';
+      if (name.isEmpty) {
+        enriched.add(torrent);
+        continue;
+      }
+
+      final metadata = await metadataFetcher(name);
+      if (metadata != null) {
+        enriched.add({
+          ...torrent,
+          ...metadata, // Merge metadata fields into torrent map
+        });
+      } else {
+        enriched.add(torrent);
+      }
+    }
+
+    return enriched;
+  }
+
+  Future<bool> isTorrentActive(String infoHash) async {
+    try {
+      final bool? result = await _channel.invokeMethod<bool>(
+        'isTorrentActive',
+        {'infoHash': infoHash},
+      );
+      return result ?? false;
+    } catch (e, st) {
+      debugPrint('[LibtorrentService] isTorrentActive failed: $e\n$st');
+      return false;
+    }
+  }
 }
