@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
+import 'package:crypto/crypto.dart';
+
 
 class LibtorrentWrapper {
   static const MethodChannel _channel = MethodChannel('libtorrentwrapper');
@@ -140,9 +143,19 @@ class LibtorrentWrapper {
       return (result != null && result.isNotEmpty) ? result : null;
     } catch (e, stacktrace) {
       debugPrint('[LibtorrentWrapper] getInfoHash error: $e\n$stacktrace');
-      return null;
+
+      // TEMP: fallback to hashing the file contents
+      try {
+        final fileBytes = await File(torrentPath).readAsBytes();
+        final hash = sha1.convert(fileBytes).toString();
+        debugPrint('[LibtorrentWrapper] fallback infoHash = $hash');
+        return hash;
+      } catch (fallbackError) {
+        return null;
+      }
     }
   }
+
 
   /// Returns all active torrent stats in JSON.
   static Future<String> getTorrentStats() async {
@@ -207,7 +220,31 @@ class LibtorrentWrapper {
       return false;
     }
   }
+  /// Starts a torrent by its infoHash (if already added).
+  Future<bool> startTorrentByHash(String infoHash) async {
+    print('startTorrentByHash called with infoHash: $infoHash');
+    if (infoHash == null || infoHash.isEmpty) {
+      print('ERROR: infoHash is null or empty!');
+      return false;
+    }
+    if (infoHash.length != 40) {
+      print('ERROR: infoHash length is not 40 chars: ${infoHash.length}');
+      return false;
+    }
+
+    try {
+      final result = await _channel.invokeMethod<bool>('startTorrentByHash', infoHash);
+      return result == true;
+    } catch (e) {
+      print('startTorrentByHash native call error: $e');
+      return false;
+    }
+  }
+
+
+
 }
+
 
 class _CreateTorrentRequest {
   final String path;

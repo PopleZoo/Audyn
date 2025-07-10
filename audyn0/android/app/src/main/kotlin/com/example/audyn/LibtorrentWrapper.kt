@@ -1,4 +1,5 @@
 package com.example.audyn
+import java.io.IOException
 
 import android.content.Context
 import java.io.File
@@ -85,4 +86,21 @@ class LibtorrentWrapper(private val context: Context) {
         val output = File(context.filesDir, torrentName)
         return createTorrent(sourceFilePath, output.absolutePath, trackers)
     }
+    external fun startTorrentByHash(infoHash: String): Boolean
+
+    external fun getInfoHashNative(torrentPath: String): String
+
+    fun getInfoHash(torrentPath: String): String {
+        val torrentFile = File(torrentPath)
+        if (!torrentFile.exists()) throw IOException("Torrent file not found")
+
+        return getInfoHashNative(torrentFile.absolutePath)
+    }
+
+    // 🔽 NEW JNI declaration
+    external fun getInfoHashFromBytes(torrentBytes: ByteArray): String
+
+
+
+
 }

@@ -116,6 +116,21 @@ class MainActivity : AudioServiceFragmentActivity() {
                             .onSuccess(result::success)
                             .onFailure { e -> result.error("NATIVE_ERROR", e.localizedMessage, null) }
                     }
+                    "startTorrentByHash" -> {
+                        val args = call.arguments as? Map<*, *>
+                        val infoHash = args?.get("infoHash") as? String
+
+                        if (infoHash.isNullOrEmpty()) {
+                            result.error("INVALID_ARGUMENT", "Expected a string infoHash", null)
+                            return@setMethodCallHandler
+                        }
+
+                        val success = libtorrentWrapper.startTorrentByHash(infoHash)
+                        result.success(success)
+                    }
+
+
+
 
                     /*───────────────────────────────*
                      *  ADD TORRENT (BYTES)
@@ -229,6 +244,39 @@ class MainActivity : AudioServiceFragmentActivity() {
                         }.onSuccess(result::success)
                             .onFailure { e -> result.error("ERROR", e.localizedMessage, null) }
                     }
+
+                    "getInfoHash" -> {
+                        val torrentPath = call.arguments as? String
+                        if (torrentPath.isNullOrEmpty()) {
+                            result.error("INVALID_ARGUMENT", "torrentPath is required", null)
+                            return@setMethodCallHandler
+                        }
+
+                        runCatching {
+                            libtorrentWrapper.getInfoHash(torrentPath) // make sure this method exists in your wrapper
+                        }.onSuccess { infoHash ->
+                            result.success(infoHash)
+                        }.onFailure { e ->
+                            result.error("ERROR", e.localizedMessage, null)
+                        }
+                    }
+                    "getInfoHashFromDecryptedBytes" -> {
+                        val args = call.arguments as? Map<*, *>
+                        val torrentBytes = args?.get("torrentBytes") as? ByteArray
+
+                        if (torrentBytes == null) {
+                            result.error("INVALID_ARGUMENT", "torrentBytes is required", null)
+                            return@setMethodCallHandler
+                        }
+
+                        try {
+                            val infoHash = libtorrentWrapper.getInfoHashFromBytes(torrentBytes)
+                            result.success(infoHash)
+                        } catch (e: Exception) {
+                            result.error("NATIVE_ERROR", e.localizedMessage, null)
+                        }
+                    }
+
 
                     /*───────────────────────────────*
                      *  FALLBACK

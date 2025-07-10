@@ -117,13 +117,12 @@ void callbackDispatcher() {
           return true;
         }
 
-        final seeder = MusicSeederService();
-        await seeder.init();
+        final seeder = await MusicSeederService.create();
         await seeder.seedMissingSongs();
 
-        debugPrint('[Workmanager] Successfully seeded missing songs.');
+        debugPrint('[Workmanager] ✅ Successfully seeded missing songs.');
       } catch (e, stackTrace) {
-        debugPrint('[Workmanager] Error during seeding: $e\n$stackTrace');
+        debugPrint('[Workmanager] ❌ Error during seeding: $e\n$stackTrace');
       }
     }
     return true;

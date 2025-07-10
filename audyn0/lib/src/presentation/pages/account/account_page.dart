@@ -26,23 +26,33 @@ class _AccountPageState extends State<AccountPage> {
   String? _error;
 
   final _libtorrent = LibtorrentService();
-  final _seeder = MusicSeederService();
+  late MusicSeederService _seeder; // Declare without initializing
 
   List<Map<String, dynamic>> _localTorrents = [];
   List<Map<String, dynamic>> _seededTorrents = [];
   Map<String, Map<String, dynamic>> _metaCache = {}; // Keyed by torrent name or info_hash
 
   SupabaseClient get _sb => Supabase.instance.client;
+  bool _seederReady = false;
 
   @override
   void initState() {
     super.initState();
+    _initSeeder();
+  }
+
+  Future<void> _initSeeder() async {
+    _seeder = await MusicSeederService.create();
+    _seederReady = true;
+
     final user = _sb.auth.currentUser;
     if (user != null) {
-      _loadUserTorrents(user.id);
-      _scanLocalTorrents();
+      await _loadUserTorrents(user.id);
+      await _scanLocalTorrents();
     }
   }
+
+
 
   /* ────────────── AUTH ────────────── */
 
@@ -107,13 +117,13 @@ class _AccountPageState extends State<AccountPage> {
   /* ────────────── LOCAL TORRENTS ────────────── */
 
   Future<void> _scanLocalTorrents() async {
+    if (!_seederReady) return;
     setState(() {
       _busy = true;
       _error = null;
     });
 
     try {
-      await _seeder.init();
       final base = await getApplicationDocumentsDirectory();
       final dir = Directory(p.join(base.path, 'vault'));
       if (!await dir.exists()) {

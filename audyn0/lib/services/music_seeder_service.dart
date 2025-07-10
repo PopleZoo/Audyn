@@ -15,16 +15,23 @@ import '../utils/CryptoHelper.dart';
 import '../src/data/services/LibtorrentService.dart';
 
 class MusicSeederService {
-  MusicSeederService([OnAudioQuery? aq]) : audioQuery = aq ?? OnAudioQuery();
+  MusicSeederService._(this.audioQuery);
+
+  /// Factory constructor to create and initialize the service properly
+  static Future<MusicSeederService> create([OnAudioQuery? aq]) async {
+    final service = MusicSeederService._(aq ?? OnAudioQuery());
+    await service._init();
+    return service;
+  }
 
   /*─────────────────────────  DI  ───────────────────────────*/
   final OnAudioQuery      audioQuery;
   final LibtorrentService _libtorrent = LibtorrentService();
 
   /*─────────────────────────  STATE  ─────────────────────────*/
-  Directory?                    torrentsDir;          // <app>/torrents
-  final Set<String>             knownTorrentNames = {};          // normalized
-  final Map<String, String>     _nameToPathMap    = {};          // norm → song
+  Directory?                        torrentsDir;          // <app>/torrents
+  final Set<String>                 knownTorrentNames = {};          // normalized keys
+  final Map<String, String>         _nameToPathMap    = {};          // norm → song path
   final Map<String, Map<String, dynamic>> _metaCache = {};
 
   Map<String, String> get nameToPathMap => _nameToPathMap;
@@ -32,21 +39,28 @@ class MusicSeederService {
   static const _allowedExt = ['.mp3', '.flac', '.wav', '.m4a'];
 
   /*─────────────────────────  INIT  ─────────────────────────*/
-  Future<void> init() async {
+  Future<void> _init() async {
     final base = await getApplicationDocumentsDirectory();
     torrentsDir = Directory(p.join(base.path, 'torrents'));
     if (!await torrentsDir!.exists()) {
       await torrentsDir!.create(recursive: true);
+      debugPrint('[Seeder] Created torrents directory at: ${torrentsDir!.path}');
+    } else {
+      debugPrint('[Seeder] Using existing torrents directory: ${torrentsDir!.path}');
     }
   }
 
   /*─────────────────────────  HELPERS  ──────────────────────*/
-  static String norm(String name) =>
-      p.basenameWithoutExtension(name)
-          .toLowerCase()
-          .replaceAll(RegExp(r'[^\w]+'), '_');
+
+  /// Normalize a file or torrent name for consistent keys.
+  /// Using full basename including extension for uniqueness.
+  static String norm(String name) {
+    final base = p.basename(name);
+    return base.toLowerCase().replaceAll(RegExp(r'[^\w]+'), '_');
+  }
 
   /*─────────────────────────  PUBLIC  ───────────────────────*/
+
   Future<List<String>> seedMissingSongs({
     Duration gap = const Duration(milliseconds: 120),
   }) async {
@@ -70,17 +84,16 @@ class MusicSeederService {
         final hasTrackTag = (meta.trackName ?? '').trim().isNotEmpty;
         if (longEnough && hasTrackTag) valid.add(s.data);
       } catch (_) {
-        /* ignore bad file */
+        // ignore bad file
       }
     }
 
-    // Return list of created torrent files from _seedFiles
     final createdTorrents = await _seedFiles(valid, gap);
     return createdTorrents;
   }
 
-
   /*─────────────────────────  CORE SEED LOOP  ───────────────*/
+
   Future<List<String>> _seedFiles(List<String> paths, Duration gap) async {
     if (torrentsDir == null) {
       debugPrint('[Seeder] torrentsDir not initialized.');
@@ -98,13 +111,12 @@ class MusicSeederService {
       final file = File(songPath);
       if (!await file.exists()) continue;
 
-      final key     = norm(songPath);
+      final key = norm(songPath);
       final encPath = p.join(torrentsDir!.path, '$key.audyn.torrent');
 
-      /*────────── print artist list & create torrent bytes ─────────*/
       Uint8List torrentBytesPlain;
       try {
-        final meta        = await MetadataRetriever.fromFile(file);
+        final meta = await MetadataRetriever.fromFile(file);
         final artistsList = meta.trackArtistNames ?? [];
         debugPrint('[Seeder] 🎵 ${meta.trackName ?? key} → '
             'Artists: ${artistsList.join(", ")}');
@@ -121,17 +133,15 @@ class MusicSeederService {
         continue;
       }
 
-      /*────────── store encrypted on disk ─────────*/
       try {
         final encBytes = CryptoHelper.encryptBytes(torrentBytesPlain);
         await File(encPath).writeAsBytes(encBytes, flush: true);
-        createdTorrents.add(encPath);  // Collect the created torrent path
+        createdTorrents.add(encPath);
       } catch (e) {
         debugPrint('[Seeder] ❌ Writing encrypted file failed: $e');
         continue;
       }
 
-      /*────────── add to libtorrent session if not active ─────────*/
       if (!active.contains(key)) {
         final ok = await _libtorrent.addTorrentFromBytes(
           torrentBytesPlain,
@@ -145,7 +155,6 @@ class MusicSeederService {
         }
       }
 
-      /*────────── bookkeeping ─────────*/
       if (knownTorrentNames.add(key)) {
         _nameToPathMap[key] = songPath;
       }
@@ -157,6 +166,7 @@ class MusicSeederService {
   }
 
   /*─────────────────────────  METADATA CACHE  ───────────────*/
+
   Future<Map<String, dynamic>?> getMetadataForName(String anyName) async {
     final key = norm(anyName);
     if (_metaCache.containsKey(key)) return _metaCache[key];
@@ -165,17 +175,17 @@ class MusicSeederService {
     if (path == null) return null;
 
     try {
-      final meta            = await MetadataRetriever.fromFile(File(path));
+      final meta = await MetadataRetriever.fromFile(File(path));
       final artistNamesList = meta.trackArtistNames ?? [];
-      final artistNamesStr  = artistNamesList.join(', ');
+      final artistNamesStr = artistNamesList.join(', ');
 
       return _metaCache[key] = {
-        'title'       : meta.trackName ?? '',
-        'artist'      : artistNamesStr,
-        'artistnames' : artistNamesList,   // raw list for UI
-        'album'       : meta.albumName ?? '',
-        'albumArt'    : meta.albumArt,
-        'duration'    : meta.trackDuration ?? 0,
+        'title': meta.trackName ?? '',
+        'artist': artistNamesStr,
+        'artistnames': artistNamesList,
+        'album': meta.albumName ?? '',
+        'albumArt': meta.albumArt,
+        'duration': meta.trackDuration ?? 0,
       };
     } catch (e) {
       debugPrint('[Meta] read error: $e');
@@ -184,6 +194,7 @@ class MusicSeederService {
   }
 
   /*─────────────────────────  UTILS  ────────────────────────*/
+
   String? getEncryptedTorrentPath(String anyName) {
     final key = norm(anyName);
     if (!knownTorrentNames.contains(key) || torrentsDir == null) return null;

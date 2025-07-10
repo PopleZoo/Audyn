@@ -570,4 +570,118 @@ Java_com_example_audyn_LibtorrentWrapper_isTorrentActive(JNIEnv *env, jobject th
     return isActive ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_com_example_audyn_LibtorrentWrapper_startTorrentByHash(JNIEnv *env, jobject /*thiz*/, jstring j_info_hash) {
+    const char *info_hash_str = env->GetStringUTFChars(j_info_hash, nullptr);
+    std::string hashStr(info_hash_str ? info_hash_str : "");
+    env->ReleaseStringUTFChars(j_info_hash, info_hash_str);
+
+    if (hashStr.length() != 40) {
+        LOGE("Invalid infoHash length: %s", hashStr.c_str());
+        return JNI_FALSE;
+    }
+
+    lt::sha1_hash hash = hex_to_sha1(hashStr);
+
+    std::lock_guard<std::mutex> lk(g_mtx);
+    if (!g_ses) return JNI_FALSE;
+
+    auto handle = g_ses->find_torrent(hash);
+    if (!handle.is_valid()) {
+        LOGE("startTorrentByHash: No valid torrent found for hash %s", hashStr.c_str());
+        return JNI_FALSE;
+    }
+
+    if (handle.status().paused) {
+        handle.resume();
+        LOGI("Torrent resumed for hash: %s", hashStr.c_str());
+    } else {
+        LOGI("Torrent already running for hash: %s", hashStr.c_str());
+    }
+
+    return JNI_TRUE;
+}
+// JNI wrapper for getInfoHash
+JNIEXPORT jstring JNICALL
+Java_com_example_audyn_LibtorrentWrapper_getInfoHash(JNIEnv* env, jobject, jstring torrentPath) {
+    const char* nativePath = env->GetStringUTFChars(torrentPath, nullptr);
+    if (!nativePath) return env->NewStringUTF("");
+
+    std::vector<char> buf;
+    std::ifstream in(nativePath, std::ios_base::binary);
+    if (!in) {
+        env->ReleaseStringUTFChars(torrentPath, nativePath);
+        return env->NewStringUTF("");
+    }
+
+    in.unsetf(std::ios_base::skipws);
+    in.seekg(0, std::ios_base::end);
+    std::streampos fileSize = in.tellg();
+    in.seekg(0, std::ios_base::beg);
+    buf.reserve(fileSize);
+    buf.insert(buf.begin(),
+               std::istream_iterator<char>(in),
+               std::istream_iterator<char>());
+
+    lt::error_code ec;
+    lt::bdecode_node node;
+    lt::bdecode(buf.data(), buf.data() + buf.size(), node, ec);
+    if (ec) {
+        env->ReleaseStringUTFChars(torrentPath, nativePath);
+        return env->NewStringUTF("");
+    }
+
+    lt::torrent_info ti(node, ec);
+    if (ec) {
+        env->ReleaseStringUTFChars(torrentPath, nativePath);
+        return env->NewStringUTF("");
+    }
+
+    std::string hash = ti.info_hashes().v1.to_string();
+    env->ReleaseStringUTFChars(torrentPath, nativePath);
+    return env->NewStringUTF(hash.c_str());
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_example_audyn_LibtorrentWrapper_getInfoHashFromBytes(
+        JNIEnv *env,
+        jobject /* this */,
+        jbyteArray torrentBytes) {
+
+    jsize length = env->GetArrayLength(torrentBytes);
+    std::vector<char> buffer(length);
+    env->GetByteArrayRegion(torrentBytes, 0, length, reinterpret_cast<jbyte *>(buffer.data()));
+
+    try {
+        lt::error_code ec;
+        lt::bdecode_node node;
+        lt::bdecode(buffer.data(), buffer.data() + buffer.size(), node, ec);
+
+        if (ec) {
+            std::string err = "Failed to bdecode: " + ec.message();
+            return env->NewStringUTF(err.c_str());
+        }
+
+        // Create torrent_info from bdecoded node
+        lt::torrent_info info(node, ec);
+
+        if (ec) {
+            std::string err = "Failed to parse torrent_info: " + ec.message();
+            return env->NewStringUTF(err.c_str());
+        }
+
+        lt::sha1_hash hash = info.info_hashes().v1;  // For v1 torrents
+        std::ostringstream oss;
+        oss << hash;
+
+        return env->NewStringUTF(oss.str().c_str());
+
+    } catch (const std::exception &ex) {
+        std::string err = "Exception: " + std::string(ex.what());
+        return env->NewStringUTF(err.c_str());
+    }
+}
+
+
 } // extern "C"

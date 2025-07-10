@@ -1,8 +1,11 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'package:crypto/crypto.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
 
 /// A thin, Flutter‑side wrapper around the native libtorrent bridge.
 /// All heavy work happens in the platform (Android / iOS / desktop) code.
@@ -20,7 +23,6 @@ class LibtorrentService {
     try {
       final dynamic raw = await _channel.invokeMethod('getAllTorrents');
       if (raw is String) {
-        // native returned JSON string, parse it
         final parsed = jsonDecode(raw);
         if (parsed is List) {
           return parsed.cast<Map<String, dynamic>>();
@@ -39,13 +41,10 @@ class LibtorrentService {
     }
   }
 
-
   /*─────────────────────────────────────────*
-   *  ADD / REMOVE TORRENTS  (file‑based)    *
+   *  ADD / REMOVE TORRENTS  (file‑based)    *
    *─────────────────────────────────────────*/
 
-  /// Create a **.torrent** file on disk and return the torrent’s *name*
-  /// that libtorrent reports back (usually the root folder / file name).
   Future<String?> createTorrentAndGetName(
       String sourcePath,
       String outputDir,
@@ -65,9 +64,6 @@ class LibtorrentService {
     }
   }
 
-  /// Add an *existing* .torrent **file** on disk.
-  ///
-  /// Parameters mirror the ones you already pass from `MusicSeederService`.
   Future<bool> addTorrent(
       String torrentFilePath,
       String savePath, {
@@ -98,8 +94,6 @@ class LibtorrentService {
     }
   }
 
-  /// (Optional) Same as above but returns the **info‑hash** immediately if
-  /// your native code provides it.  Not used by MusicSeederService right now.
   Future<String?> addTorrentAndGetInfoHash(
       String torrentFilePath,
       String savePath, {
@@ -120,7 +114,6 @@ class LibtorrentService {
     }
   }
 
-  /// Remove a torrent by its info‑hash;  `removeData=true` wipes local files.
   Future<bool> removeTorrent(String infoHash, {bool removeData = false}) async {
     try {
       final ok = await _channel.invokeMethod<bool>('removeTorrent', {
@@ -138,8 +131,6 @@ class LibtorrentService {
    *  (OPTIONAL)  BYTE‑BASED ADD / EXPORT    *
    *─────────────────────────────────────────*/
 
-  /// Create a **.torrent file in memory** – useful if you plan to encrypt
-  /// the bytes (with CryptoHelper) and share over Supabase, WebRTC, etc.
   Future<Uint8List?> createTorrentBytes(String sourcePath) async {
     try {
       print('[DEBUG] Calling native createTorrentBytes($sourcePath)');
@@ -155,7 +146,6 @@ class LibtorrentService {
     }
   }
 
-  /// Add a torrent directly from raw bytes (after you decrypt them).
   Future<bool> addTorrentFromBytes(
       Uint8List torrentBytes,
       String savePath, {
@@ -176,33 +166,33 @@ class LibtorrentService {
     }
   }
 
-  Future<String?> getInfoHashFromBytes(Uint8List bytes) async {
+  /// NEW DIRECT METHOD: Get infoHash from raw .torrent bytes without writing to file.
+  Future<String?> getInfoHashFromDecryptedBytes(Uint8List torrentBytes) async {
     try {
-      final hash = await _channel.invokeMethod<String>(
-        'getInfoHashFromBytes',
-        bytes,
+      final result = await _channel.invokeMethod<String>(
+        'getInfoHashFromDecryptedBytes',
+        {
+          'torrentBytes': torrentBytes,
+        },
       );
-      if (hash != null && hash.isNotEmpty) return hash;
-    } on MissingPluginException {
-      debugPrint('[LibtorrentService] ► Native infoHash not available, using fallback.');
-    } catch (e, st) {
-      debugPrint('[LibtorrentService] getInfoHashFromBytes failed: $e\n$st');
-    }
 
-    // Dart fallback
-    final digest = sha1.convert(bytes);
-    final hex    = digest.toString();
-    debugPrint('[LibtorrentService] ► Fallback SHA‑1 infoHash = $hex');
-    return hex;
+      if (result == null || result.trim().isEmpty) {
+        debugPrint('[LibtorrentService] ► Native infoHash not available, using fallback.');
+        final fallback = sha1.convert(torrentBytes).toString();
+        debugPrint('[LibtorrentService] ► Fallback SHA‑1 infoHash = $fallback');
+        return fallback;
+      }
+
+      return result.trim();
+    } catch (e, st) {
+      debugPrint('[LibtorrentService] getInfoHashFromDecryptedBytes error: $e\n$st');
+      return null;
+    }
   }
 
-  /// Get torrent list and enrich each torrent map with metadata.
-  ///
-  /// The [metadataFetcher] is a callback function you provide that takes a
-  /// torrent name and returns a Future<Map<String, dynamic>?> containing
-  /// metadata fields like 'title', 'artist', 'album', 'art', etc.
-  ///
-  /// If metadataFetcher returns null, the torrent map is returned as is.
+
+
+
   Future<List<Map<String, dynamic>>> getTorrentList({
     required Future<Map<String, dynamic>?> Function(String torrentName) metadataFetcher,
   }) async {
@@ -220,7 +210,7 @@ class LibtorrentService {
       if (metadata != null) {
         enriched.add({
           ...torrent,
-          ...metadata, // Merge metadata fields into torrent map
+          ...metadata,
         });
       } else {
         enriched.add(torrent);
@@ -242,4 +232,24 @@ class LibtorrentService {
       return false;
     }
   }
+
+  Future<void> startTorrentByHash(String infoHash) async {
+    if (infoHash.isEmpty || infoHash.length != 40 || !RegExp(r'^[a-f0-9]+$').hasMatch(infoHash)) {
+      debugPrint('[LibtorrentService] startTorrentByHash called with invalid infoHash: $infoHash');
+      return;
+    }
+
+    try {
+      final bool? started = await _channel.invokeMethod<bool>(
+        'startTorrentByHash',
+        {'infoHash': infoHash},
+      );
+      if (started == null || !started) {
+        debugPrint('[LibtorrentService] startTorrentByHash: Failed to start torrent for hash $infoHash');
+      }
+    } catch (e, st) {
+      debugPrint('[LibtorrentService] startTorrentByHash failed: $e\n$st');
+    }
+  }
+
 }
