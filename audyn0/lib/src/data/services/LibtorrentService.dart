@@ -354,5 +354,23 @@ class LibtorrentService {
     }
   }
 
+  /// Returns all locally stored .torrent.enc files (used for cleanup)
+  Future<List<File>> getAllLocalTorrentFiles() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final torrentsDir = Directory(p.join(dir.path, 'torrents'));
+      if (!await torrentsDir.exists()) return [];
+
+      return torrentsDir
+          .listSync(recursive: false)
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.torrent.enc'))
+          .toList();
+    } catch (e, st) {
+      debugPrint('[LibtorrentService] getAllLocalTorrentFiles failed: $e\n$st');
+      return [];
+    }
+  }
+
 
 }

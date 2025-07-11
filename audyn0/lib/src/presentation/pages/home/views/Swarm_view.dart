@@ -3,12 +3,15 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_media_metadata/flutter_media_metadata.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import 'package:path/path.dart' as p;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../../services/music_seeder_service.dart';
 import '../../../../../utils/CryptoHelper.dart';
+import '../../../../bloc/Downloads/DownloadsBloc.dart';
+import '../../../../core/di/service_locator.dart';
 import '../../../../data/services/LibtorrentService.dart';
 
 
@@ -27,6 +30,7 @@ class _SwarmViewState extends State<SwarmView> {
   bool _isLoading = true;
   bool _isError = false;
   String _search = '';
+  Set<String> _localSongKeys = {};
 
   @override
   void initState() {
@@ -46,36 +50,66 @@ class _SwarmViewState extends State<SwarmView> {
   }
 
   Future<void> _validateAndUploadLocalSongs() async {
-    // 1) Request storage/audio permissions
     if (!await _audioQuery.permissionsRequest()) return;
 
-    // 2) Query all on‑device songs
     final songs = await _audioQuery.querySongs();
+    final existingSongPaths = songs.map((s) => s.data).toSet();
+
+    // Clean up orphaned torrent files
+    final seededTorrents = await _seeder!.getAllSeededTorrents();
+
+    for (final encTorrentPath in seededTorrents) {
+      final base = p.basenameWithoutExtension(encTorrentPath);
+      final norm = MusicSeederService.norm(base);
+
+      final isStillPresent = existingSongPaths.any((sp) =>
+      MusicSeederService.norm(p.basenameWithoutExtension(sp)) == norm);
+
+      if (!isStillPresent) {
+        final infoHash = await _getInfoHashFromPath(encTorrentPath);
+        if (infoHash != null) {
+          // Stop and remove from libtorrent
+          await _libtorrent.removeTorrent(infoHash, removeData: false);
+
+          // Remove peer record from Supabase
+          final user = Supabase.instance.client.auth.currentUser;
+          if (user != null) {
+            await Supabase.instance.client
+                .from('seeder_peers')
+                .delete()
+                .match({'info_hash': infoHash, 'user_id': user.id});
+          }
+        }
+
+        // Delete the local encrypted torrent file
+        try {
+          await File(encTorrentPath).delete();
+          debugPrint('[Cleanup] Deleted orphaned .torrent.enc file: $encTorrentPath');
+        } catch (e) {
+          debugPrint('[Cleanup] Failed to delete $encTorrentPath: $e');
+        }
+      }
+    }
+
+    // Seed valid local songs
     for (final song in songs) {
-      // 3) Extract & validate metadata
       final meta = await _extractValidMetadata(song.data);
       if (meta == null) continue;
 
-      // 4) Normalize the name
-      final norm = MusicSeederService.norm(
-        p.basenameWithoutExtension(song.data),
-      );
+      final normKey = MusicSeederService.norm(p.basenameWithoutExtension(song.data));
+      _localSongKeys.add(normKey);
 
-      // 5) Seed _this_ one song, get back the encrypted torrent path
       final encryptedTorrentPath = await _seeder!.seedSong(song.data);
       if (encryptedTorrentPath == null) continue;
 
-      // 6) Pull its info‐hash
       final infoHash = await _getInfoHashFromPath(encryptedTorrentPath);
       if (infoHash == null) continue;
 
-      // 7) Start seeding
       await _libtorrent.startTorrentByHash(infoHash);
-
-      // 8) Finally, upload both torrent record + metadata
-      await _uploadToSupabase(infoHash, norm, meta);
+      await _uploadToSupabase(infoHash, normKey, meta);
     }
   }
+
 
 
   /// Extracts metadata if trackName, artist & albumArt are present
@@ -127,7 +161,41 @@ class _SwarmViewState extends State<SwarmView> {
       'album': meta.albumName,
       'album_art_url': albumArtBase64,
     }, onConflict: 'info_hash');
+    // Also upsert into `seeder_peers`
+    final ip = await _getLocalIp();
+    final ipEnc = ip != null ? CryptoHelper.encryptString(ip) : null;
+
+    if (ipEnc != null) {
+      await Supabase.instance.client
+          .from('seeder_peers')
+          .upsert({
+        'user_id': user.id,
+        'info_hash': infoHash,
+        'last_seen': DateTime.now().toIso8601String(),
+        'ip_enc': ipEnc,
+      }, onConflict: 'user_id,info_hash');
+    }
+
   }
+
+  Future<String?> _getLocalIp() async {
+    try {
+      final interfaces = await NetworkInterface.list();
+      for (final interface in interfaces) {
+        for (final addr in interface.addresses) {
+          if (addr.type == InternetAddressType.IPv4 &&
+              !addr.isLoopback &&
+              !addr.address.startsWith('169.254')) {
+            return addr.address;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[SwarmView] Failed to get local IP: $e');
+    }
+    return null;
+  }
+
 
   /// 2) Fetch Supabase torrents + metadata
   Future<void> _fetchSupabaseTorrents() async {
@@ -231,17 +299,20 @@ class _SwarmViewState extends State<SwarmView> {
           }
 
           // Determine trailing icon (status)
+          final torrentNameKey = MusicSeederService.norm(t['name'] as String? ?? '');
           final isSeeding = t['state'] == 5 || t['seed_mode'] == true;
-          final isLocal = (t['vault_files'] as List?)?.isNotEmpty ?? false;
+          final isLocal = _localSongKeys.contains(torrentNameKey)
+              || ((t['vault_files'] as List?)?.isNotEmpty ?? false);
 
           Widget trailing;
           if (isLocal) {
-            trailing = Icon(Icons.check_circle, color: Theme.of(context).colorScheme.secondary);
+            trailing = Icon(Icons.check_circle, color: theme.colorScheme.secondary);
           } else if (isSeeding) {
-            trailing = Icon(Icons.cloud_upload, color: Theme.of(context).colorScheme.primary);
+            trailing = Icon(Icons.cloud_upload, color: theme.colorScheme.primary);
           } else {
             trailing = Icon(Icons.cloud_download, color: Colors.grey.shade400);
           }
+
 
           return ListTile(
             contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -259,7 +330,7 @@ class _SwarmViewState extends State<SwarmView> {
             ),
             trailing: trailing,
             onTap: () {
-              _libtorrent.startTorrentByHash(t['info_hash']);
+              showTorrentDialog(context, t,_localSongKeys);
             },
           );
         },
@@ -279,5 +350,106 @@ class _SwarmViewState extends State<SwarmView> {
       child: const Icon(Icons.music_note_outlined, color: Colors.grey),
     );
   }
+
+
+  Future<void> showTorrentDialog(BuildContext context, Map<String, dynamic> torrent, Set<String> localSongKeys) async {
+    final theme = Theme.of(context);
+    final meta = (torrent['torrent_metadata'] as Map<String, dynamic>?) ?? {};
+    final title = meta['title'] ?? torrent['name'] ?? 'Unknown';
+    final artist = meta['artist'] ?? 'Unknown Artist';
+    final album = meta['album'] ?? 'Unknown Album';
+    final artBase64 = meta['album_art_url'] as String?;
+
+    Widget leading;
+    if (artBase64 != null && artBase64.isNotEmpty) {
+      try {
+        final bytes = base64Decode(artBase64);
+        leading = Image.memory(
+          bytes,
+          width: 100,
+          height: 100,
+          fit: BoxFit.cover,
+        );
+      } catch (_) {
+        leading = Icon(Icons.broken_image, size: 100, color: theme.colorScheme.onSurface.withOpacity(0.3));
+      }
+    } else {
+      leading = Icon(Icons.music_note, size: 100, color: theme.colorScheme.onSurface.withOpacity(0.3));
+    }
+
+    // Normalize torrent name to compare with local song keys
+    final torrentNameKey = MusicSeederService.norm(torrent['name'] as String? ?? '');
+
+    final bool isSeeding = torrent['state'] == 5 || torrent['seed_mode'] == true;
+    final bool isLocal = localSongKeys.contains(torrentNameKey)
+        || ((torrent['vault_files'] as List?)?.isNotEmpty ?? false);
+
+    return showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text(title),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              leading,
+              const SizedBox(height: 16),
+              Text('Artist: $artist'),
+              Text('Album: $album'),
+              const SizedBox(height: 24),
+              if (isLocal) Text('You already have this song stored locally.', style: TextStyle(color: Colors.green)),
+              if (isSeeding) Text('You are currently seeding this song.', style: TextStyle(color: Colors.blue)),
+            ],
+          ),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('Close'),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+            TextButton(
+              child: Text(isLocal || isSeeding ? 'Cannot Download' : 'Start Download'),
+              onPressed: (isLocal || isSeeding)
+                  ? null
+                  : () {
+                final infoHash = torrent['info_hash'] ?? '';
+                if (infoHash.isEmpty) return;
+
+                final title = (torrent['torrent_metadata'] as Map<String, dynamic>?)?['title'] ?? torrent['name'] ?? '';
+                final artist = (torrent['torrent_metadata'] as Map<String, dynamic>?)?['artist'] ?? 'Unknown Artist';
+                final album = (torrent['torrent_metadata'] as Map<String, dynamic>?)?['album'] ?? 'Unknown Album';
+
+                Uint8List? art;
+                final artBase64 = (torrent['torrent_metadata'] as Map<String, dynamic>?)?['album_art_url'] as String?;
+                if (artBase64 != null && artBase64.isNotEmpty) {
+                  try {
+                    art = base64Decode(artBase64);
+                  } catch (_) {}
+                }
+
+                final savePath = '/storage/emulated/0/Download/music'; // adjust as needed
+
+                context.read<DownloadsBloc>().add(
+                  DownloadRequested(
+                    infoHash: infoHash,
+                    name: torrent['name'] ?? '',
+                    title: title,
+                    artist: artist,
+                    album: album,
+                    albumArt: art,
+                    filePath: savePath,
+                  ),
+                );
+
+                Navigator.of(context).pop();
+              },
+            ),
+
+          ],
+        );
+      },
+    );
+  }
+
+
 
 }

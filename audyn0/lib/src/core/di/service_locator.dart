@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:audyn/src/bloc/Downloads/DownloadsBloc.dart';
 import 'package:audyn/src/data/repositories/downloads_repository.dart';
 import 'package:get_it/get_it.dart';
@@ -18,10 +20,11 @@ import 'package:audyn/src/data/repositories/search_repository.dart';
 import 'package:audyn/src/data/repositories/song_repository.dart';
 import 'package:audyn/src/data/repositories/theme_repository.dart';
 import 'package:on_audio_query/on_audio_query.dart';
+
 final sl = GetIt.instance;
 
 void init() {
-  // Bloc
+  // Bloc registrations
   sl.registerFactory(() => ThemeBloc(repository: sl()));
   sl.registerFactory(() => HomeBloc(repository: sl()));
   sl.registerFactory(() => PlayerBloc(repository: sl()));
@@ -29,15 +32,13 @@ void init() {
   sl.registerFactory(() => FavoritesBloc(repository: sl()));
   sl.registerFactory(() => RecentsBloc(repository: sl()));
   sl.registerFactory(() => SearchBloc(repository: sl()));
+  sl.registerFactory(() => DownloadsBloc(repository: sl())); // DownloadsBloc
 
-  // Register DownloadsBloc with its repository
-  sl.registerFactory(() => DownloadsBloc(repository: sl()));
-
-  // Cubit
+  // Cubit registrations
   sl.registerFactory(() => ScanCubit());
   sl.registerFactory(() => PlaylistsCubit());
 
-  // Repository
+  // Repository registrations
   sl.registerLazySingleton(() => ThemeRepository());
   sl.registerLazySingleton(() => HomeRepository());
   sl.registerLazySingleton<MusicPlayer>(() => JustAudioPlayer());
@@ -45,10 +46,29 @@ void init() {
   sl.registerLazySingleton(() => FavoritesRepository());
   sl.registerLazySingleton(() => RecentsRepository());
   sl.registerLazySingleton(() => SearchRepository());
+  sl.registerLazySingleton(() => DownloadsRepository()); // DownloadsRepository
 
-  // Register DownloadsRepository
-  sl.registerLazySingleton(() => DownloadsRepository());
-
-  // Third Party
+  // Third party packages
   sl.registerLazySingleton(() => OnAudioQuery());
+}
+
+/// DownloadsEvent subclass for requesting a new download.
+class DownloadRequested extends DownloadsEvent {
+  final String infoHash;
+  final String name;
+  final String? title;
+  final String? artist;
+  final String? album;
+  final Uint8List? albumArt;
+  final String filePath;
+
+  DownloadRequested({
+    required this.infoHash,
+    required this.name,
+    this.title,
+    this.artist,
+    this.album,
+    this.albumArt,
+    required this.filePath,
+  });
 }

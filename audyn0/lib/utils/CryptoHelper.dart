@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:typed_data';
-
+import 'package:crypto/crypto.dart';
 import 'package:encrypt/encrypt.dart' as enc;
 import 'package:flutter/foundation.dart';
 
@@ -55,6 +55,12 @@ class CryptoHelper {
     return cipher;
   }
 
+  static String encryptString(String input) {
+    // Example: SHA-256 hash (change to match your app's encryption)
+    final bytes = utf8.encode(input);
+    final digest = sha256.convert(bytes);
+    return digest.toString();
+  }
 
   /// Decrypts raw bytes previously encrypted with [encryptBytes].
   /// Returns null if prefix missing or decryption fails.

@@ -234,4 +234,17 @@ class MusicSeederService {
 
     return outPath;
   }
+  Future<List<String>> getAllSeededTorrents() async {
+    final appDir = await getApplicationDocumentsDirectory();
+    final torrentDir = Directory(p.join(appDir.path, 'torrents'));
+
+    if (!await torrentDir.exists()) return [];
+
+    return torrentDir
+        .listSync()
+        .whereType<File>()
+        .where((file) => file.path.endsWith('.torrent.enc'))
+        .map((file) => file.path)
+        .toList();
+  }
 }
