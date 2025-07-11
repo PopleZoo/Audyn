@@ -1,24 +1,19 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
-
-import 'package:flutter/foundation.dart'; // consolidateHttpClientResponseBytes
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_media_metadata/flutter_media_metadata.dart';
 import 'package:on_audio_query/on_audio_query.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-
 import '../../../../../services/music_seeder_service.dart';
 import '../../../../../utils/CryptoHelper.dart';
 import '../../../../data/services/LibtorrentService.dart';
-import '../../../widgets/torrent_list_tile.dart';
+
 
 class SwarmView extends StatefulWidget {
   const SwarmView({super.key});
-
   @override
   State<SwarmView> createState() => _SwarmViewState();
 }
@@ -28,469 +23,168 @@ class _SwarmViewState extends State<SwarmView> {
   final _audioQuery = OnAudioQuery();
   MusicSeederService? _seeder;
 
-  final List<Map<String, dynamic>> _torrents = [];
-  final List<Map<String, dynamic>> _filtered = [];
-  final Map<String, Map<String, dynamic>> _metaCache = {};
-  final Set<String> _localUploadHistory = {};
-  final Map<String, List<String>> _vaultByHash = {};
-  final Map<String, List<String>> _vaultByName = {};
-  List<SongModel> _deviceSongs = [];
-  final Map<String, Metadata> _validatedMetadataCache = {};
-
-  String _search = '';
+  List<Map<String, dynamic>> _torrents = [];
   bool _isLoading = true;
   bool _isError = false;
+  String _search = '';
 
   @override
   void initState() {
     super.initState();
-    _bootstrap();
+    _init();
   }
 
-  Future<void> _bootstrap() async {
+  Future<void> _init() async {
     try {
       _seeder = await MusicSeederService.create();
-      await _loadLocalUploadHistory();
-      await _queryDeviceSongs();
-      await _syncLocal();
-      await _refresh();
+      await _validateAndUploadLocalSongs();
+      await _fetchSupabaseTorrents();
     } catch (e, st) {
-      debugPrint('[SwarmView] Bootstrap error: $e\n$st');
+      debugPrint('[SwarmView] init error: $e\n$st');
+      setState(() => _isError = true);
     }
   }
 
-  Future<void> _queryDeviceSongs() async {
-    bool granted = await _audioQuery.permissionsStatus();
-    if (!granted) granted = await _audioQuery.permissionsRequest();
-    if (!granted) return;
+  Future<void> _validateAndUploadLocalSongs() async {
+    // 1) Request storage/audio permissions
+    if (!await _audioQuery.permissionsRequest()) return;
 
+    // 2) Query all on‑device songs
     final songs = await _audioQuery.querySongs();
-    const batchSize = 5;
-    final validated = <SongModel>[];
+    for (final song in songs) {
+      // 3) Extract & validate metadata
+      final meta = await _extractValidMetadata(song.data);
+      if (meta == null) continue;
 
-    for (var i = 0; i < songs.length; i += batchSize) {
-      final batch = songs.skip(i).take(batchSize);
-      final results = await Future.wait(batch.map((song) async {
-        final meta = await _extractValidMetadata(song.data);
-        if (meta != null) {
-          final norm = MusicSeederService.norm(p.basenameWithoutExtension(song.data));
-          _validatedMetadataCache[norm] = meta;
-          return song;
-        }
-        return null;
-      }));
+      // 4) Normalize the name
+      final norm = MusicSeederService.norm(
+        p.basenameWithoutExtension(song.data),
+      );
 
-      validated.addAll(results.whereType<SongModel>());
+      // 5) Seed _this_ one song, get back the encrypted torrent path
+      final encryptedTorrentPath = await _seeder!.seedSong(song.data);
+      if (encryptedTorrentPath == null) continue;
+
+      // 6) Pull its info‐hash
+      final infoHash = await _getInfoHashFromPath(encryptedTorrentPath);
+      if (infoHash == null) continue;
+
+      // 7) Start seeding
+      await _libtorrent.startTorrentByHash(infoHash);
+
+      // 8) Finally, upload both torrent record + metadata
+      await _uploadToSupabase(infoHash, norm, meta);
     }
-
-    if (mounted) setState(() => _deviceSongs = validated);
   }
 
-  Future<Metadata?> _extractValidMetadata(String path) async {
+
+  /// Extracts metadata if trackName, artist & albumArt are present
+  Future<Metadata?> _extractValidMetadata(String filePath) async {
     try {
-      final meta = await MetadataRetriever.fromFile(File(path));
-      final hasBasicInfo = (meta.trackName?.isNotEmpty ?? false) &&
-          (meta.trackArtistNames?.isNotEmpty ?? false) &&
-          (meta.albumArt?.isNotEmpty ?? false);
-
-      return hasBasicInfo ? meta : null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Future<void> _syncLocal() async {
-    await _indexVault();
-
-    for (final entry in _vaultByName.entries) {
-      final name = entry.key;
-      final filePaths = entry.value;
-
-      for (final filePath in filePaths) {
-        final infoHash = await _getInfoHashFromLocalPath(filePath);
-        if (infoHash != null && infoHash.isNotEmpty) {
-          if (!await _libtorrent.isTorrentActive(infoHash)) {
-            final encBytes = await File(filePath).readAsBytes();
-            final plain = CryptoHelper.decryptBytes(encBytes);
-
-            if (plain != null && plain.isNotEmpty) {
-              await _saveDecryptedTorrentForDebug(filePath, plain);
-              final isValid = await _isValidTorrentBytes(plain);
-              if (!isValid) {
-                debugPrint('[SwarmView] Invalid torrent bytes for $filePath, skipping');
-                continue;
-              }
-
-              try {
-                await _libtorrent.addTorrentFromBytes(
-                  plain,
-                  p.dirname(filePath),
-                  seedMode: true,
-                );
-                debugPrint('[SwarmView] Added torrent from $filePath');
-              } catch (e, st) {
-                debugPrint('[SwarmView] Failed to add torrent from $filePath: $e\n$st');
-              }
-            } else {
-              debugPrint('[SwarmView] Decrypted bytes empty/null for $filePath');
-            }
-          }
-        } else {
-          debugPrint('[SwarmView] InfoHash null/empty for $filePath');
-        }
+      final meta = await MetadataRetriever.fromFile(File(filePath));
+      if ((meta.trackName?.isNotEmpty ?? false)
+          && (meta.trackArtistNames?.isNotEmpty ?? false)
+          && (meta.albumName?.isNotEmpty ?? false)
+          && (meta.albumArt?.isNotEmpty ?? false)) {
+        return meta;
       }
-    }
-
-    final localTorrents = <Map<String, dynamic>>[];
-
-    for (final hash in _vaultByHash.keys) {
-      final paths = _vaultByHash[hash]!;
-      final filename = p.basenameWithoutExtension(paths.first.replaceAll('.audyn', ''));
-      localTorrents.add({
-        'name': filename,
-        'info_hash': hash,
-        'vault_files': paths,
-        'seed_mode': true,
-      });
-    }
-
-    final enrichedList = await Future.wait(localTorrents.map(_enrichTorrent));
-    final enriched = enrichedList.whereType<Map<String, dynamic>>().toList();
-
-    if (mounted) {
-      setState(() {
-        _torrents.addAll(enriched);
-        _applySearch();
-      });
-    }
-
-    _applySearch();
+    } catch (_) { }
+    return null;
   }
 
-  Future<void> _saveDecryptedTorrentForDebug(String originalPath, Uint8List bytes) async {
-    try {
-      final dir = Directory(p.dirname(originalPath));
-      final debugFile = File(p.join(dir.path, p.basenameWithoutExtension(originalPath) + '_decrypted_debug.torrent'));
-      await debugFile.writeAsBytes(bytes);
-      debugPrint('[SwarmView] Saved decrypted debug torrent at ${debugFile.path}');
-    } catch (e, st) {
-      debugPrint('[SwarmView] Failed to save decrypted debug torrent: $e\n$st');
-    }
+  Future<String?> _getInfoHashFromPath(String encPath) async {
+    final bytes = await File(encPath).readAsBytes();
+    final plain = CryptoHelper.decryptBytes(bytes);
+    if (plain == null) return null;
+    return await _libtorrent.getInfoHashFromDecryptedBytes(plain);
   }
 
-  Future<bool> _isValidTorrentBytes(Uint8List bytes) async {
-    try {
-      final hash = await _libtorrent.getInfoHashFromDecryptedBytes(bytes);
-      return hash != null && hash.isNotEmpty;
-    } catch (e, st) {
-      debugPrint('[SwarmView] Torrent validation failed: $e\n$st');
-      return false;
-    }
+  Future<void> _uploadToSupabase(String infoHash, String name, Metadata meta) async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+
+    // Upsert torrent
+    await Supabase.instance.client
+        .from('torrents')
+        .upsert({
+      'info_hash': infoHash,
+      'name': name,
+      'owner_id': user.id,
+      'created_at': DateTime.now().toIso8601String(),
+    }, onConflict: 'info_hash');
+
+    final albumArtBase64 = meta.albumArt != null
+        ? base64Encode(meta.albumArt!)
+        : null;
+
+    // Upsert metadata
+    await Supabase.instance.client
+        .from('torrent_metadata')
+        .upsert({
+      'info_hash': infoHash,
+      'title': meta.trackName,
+      'artist': meta.trackArtistNames!.join(', '),
+      'album': meta.albumName,
+      'album_art_url': albumArtBase64,
+    }, onConflict: 'info_hash');
   }
 
-  Future<void> _refresh() async {
-    if (!mounted) return;
-
+  /// 2) Fetch Supabase torrents + metadata
+  Future<void> _fetchSupabaseTorrents() async {
     setState(() {
       _isLoading = true;
       _isError = false;
-      _torrents.clear();
-      _filtered.clear();
-      _metaCache.clear();
     });
 
     try {
-      await _seeder?.seedMissingSongs();
-      await _indexVault();
-
-      final supabaseTorrents = await _fetchTorrentsFromSupabase();
-      final enrichedList = await Future.wait(
-        supabaseTorrents.map(_enrichTorrent),
-      );
-      final enriched = enrichedList.whereType<Map<String, dynamic>>().toList();
-
-      if (mounted) {
-        setState(() {
-          _torrents.addAll(enriched);
-          _applySearch();
-        });
-      }
-    } catch (e, st) {
-      debugPrint('[SwarmView] refresh error: $e\n$st');
-      if (mounted) setState(() => _isError = true);
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _indexVault() async {
-    _vaultByHash.clear();
-    _vaultByName.clear();
-
-    final dir = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'torrents'));
-    if (!await dir.exists()) return;
-
-    await for (final file in dir.list(recursive: true)) {
-      if (file is! File || !file.path.endsWith('.audyn.torrent')) continue;
-
-      final encBytes = await file.readAsBytes();
-      final plain = CryptoHelper.decryptBytes(encBytes);
-      if (plain == null || plain.isEmpty) {
-        continue;
-      }
-
-      final hash = await _libtorrent.getInfoHashFromDecryptedBytes(plain);
-      if (hash == null || hash.isEmpty) {
-        continue;
-      }
-
-      final filename = p.basenameWithoutExtension(file.path.replaceAll('.audyn', ''));
-      final name = MusicSeederService.norm(filename);
-
-      _vaultByHash.putIfAbsent(hash, () => []).add(file.path);
-      _vaultByName.putIfAbsent(name, () => []).add(file.path);
-    }
-  }
-
-  Future<List<Map<String, dynamic>>> _fetchTorrentsFromSupabase() async {
-    try {
-      final List<dynamic> data = await Supabase.instance.client
+      // NOTE: v2 API returns data directly or throws
+      final data = await Supabase.instance.client
           .from('torrents')
-          .select()
+          .select('info_hash, name, created_at, torrent_metadata(*)')
           .order('created_at', ascending: false)
           .limit(100);
 
-      return List<Map<String, dynamic>>.from(data);
-    } catch (e) {
-      debugPrint('[SwarmView] Failed to fetch torrents from Supabase: $e');
-      return [];
-    }
-  }
+      _torrents = List<Map<String, dynamic>>.from(data as List);
 
-  Future<Map<String, dynamic>?> _enrichTorrent(Map<String, dynamic> t) async {
-    final name = t['name']?.toString() ?? '';
-    final infoHash = t['info_hash']?.toString();
-    if (name.isEmpty || infoHash == null) return null;
-
-    final norm = MusicSeederService.norm(name);
-    if (_metaCache.containsKey(norm)) return {...t, ..._metaCache[norm]!};
-
-    Map<String, dynamic>? metadata;
-
-    try {
-      metadata = await Supabase.instance.client
-          .from('torrent_metadata')
-          .select()
-          .eq('info_hash', infoHash)
-          .maybeSingle();
-    } catch (_) {}
-
-    metadata ??= await _seeder?.getMetadataForName(name);
-
-    final cached = <String, dynamic>{
-      'title': metadata?['title'] ?? name,
-      'artist': metadata?['artist'] ?? 'Unknown',
-      'artistnames': metadata?['artistnames'] ?? [],
-      'album': metadata?['album'] ?? 'Unknown',
-      'albumArtUrl': metadata?['album_art_url'],
-      'art': null,
-    };
-
-    if (cached['albumArtUrl'] != null) {
-      try {
-        final uri = Uri.tryParse(cached['albumArtUrl']);
-        if (uri != null) {
-          final req = await HttpClient().getUrl(uri);
-          final res = await req.close();
-          if (res.statusCode == 200) {
-            final bytes = await consolidateHttpClientResponseBytes(res);
-            cached['art'] = bytes;
-          }
-        }
-      } catch (_) {}
-    }
-
-    _metaCache[norm] = cached;
-
-    return {...t, ...cached};
-  }
-
-  Future<String?> _getInfoHashFromLocalPath(String path) async {
-    try {
-      final encBytes = await File(path).readAsBytes();
-      final plain = CryptoHelper.decryptBytes(encBytes);
-      if (plain == null) return null;
-      return await _libtorrent.getInfoHashFromDecryptedBytes(plain);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  void _applySearch() {
-    final q = _search.toLowerCase();
-    _filtered
-      ..clear()
-      ..addAll(_torrents.where((t) {
-        return [t['name'], t['title'], t['artist'], t['album']]
-            .any((field) => (field?.toString().toLowerCase() ?? '').contains(q));
-      }));
-    if (mounted) setState(() {});
-  }
-
-  Widget _buildTorrentTile(Map<String, dynamic> t, ThemeData theme) {
-    return TorrentListTile(
-      torrent: t,
-      onTap: () => _showTorrentDialog(t, theme),
-    );
-  }
-
-  void _showTorrentDialog(Map<String, dynamic> t, ThemeData theme) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(t['title'] ?? t['name'] ?? 'Unknown'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (t['art'] != null) Image.memory(t['art'], height: 100),
-            Text('Artist: ${t['artist'] ?? 'Unknown'}'),
-            Text('Album: ${t['album'] ?? 'Unknown'}'),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _loadLocalUploadHistory() async {
-    try {
-      final base = await getApplicationDocumentsDirectory();
-      final file = File(p.join(base.path, 'upload_history.json'));
-
-      if (await file.exists()) {
-        final contents = await file.readAsString();
-        final List<dynamic> jsonData = jsonDecode(contents);
-        _localUploadHistory
-          ..clear()
-          ..addAll(jsonData.whereType<String>());
-        debugPrint('[SwarmView] Loaded upload history: ${_localUploadHistory.length} entries.');
-      } else {
-        _localUploadHistory.clear();
-        debugPrint('[SwarmView] No upload history file, starting fresh.');
-      }
     } catch (e, st) {
-      debugPrint('[SwarmView] Loading upload history failed: $e\n$st');
-      _localUploadHistory.clear();
+      debugPrint('[SwarmView] fetch error: $e\n$st');
+      setState(() => _isError = true);
+    } finally {
+      setState(() => _isLoading = false);
     }
   }
 
-  /// Call this after creating/adding a local encrypted torrent file
-  /// to upload its info to Supabase and update local upload history.
-  Future<void> addLocalEncrypted(Map<String, dynamic> t) async {
-    final encPath = (t['vault_files'] as List?)?.first;
-    if (encPath == null) return;
-
-    try {
-      final bytes = await File(encPath).readAsBytes();
-      final plain = CryptoHelper.decryptBytes(bytes);
-      if (plain == null || plain.isEmpty) throw 'Decrypt failed';
-
-      final infoHash = await _libtorrent.getInfoHashFromDecryptedBytes(plain);
-      if (infoHash == null) throw 'Invalid infoHash';
-
-      final alreadyAdded = await _libtorrent.isTorrentActive(infoHash);
-      if (!alreadyAdded) {
-        final dir = await getApplicationDocumentsDirectory();
-        final ok = await _libtorrent.addTorrentFromBytes(
-          plain,
-          dir.path,
-          seedMode: true,
-        );
-        if (!ok) throw 'Add to session failed';
-      }
-
-      final user = Supabase.instance.client.auth.currentUser;
-      if (user == null) throw 'Not signed in';
-
-      final rows = await Supabase.instance.client
-          .from('torrents')
-          .select()
-          .eq('info_hash', infoHash)
-          .limit(1);
-      final exists = rows != null && rows.isNotEmpty;
-
-      if (!exists) {
-        final enriched = await _enrichTorrent(t);
-
-        await Supabase.instance.client.from('torrents').insert({
-          'info_hash': infoHash,
-          'name': enriched?['title'] ?? t['name'] ?? 'Unknown',
-          'owner_id': user.id,
-        });
-
-        await Supabase.instance.client.from('torrent_metadata').insert({
-          'info_hash': infoHash,
-          'title': enriched?['title'] ?? 'Unknown',
-          'artist': enriched?['artist'] ?? 'Unknown Artist',
-          'album': enriched?['album'],
-          'album_art_url': enriched?['albumArtUrl'],
-        });
-      }
-
-      if (_localUploadHistory.add(infoHash)) {
-        final base = await getApplicationDocumentsDirectory();
-        final file = File(p.join(base.path, 'upload_history.json'));
-        await file.writeAsString(jsonEncode(_localUploadHistory.toList()));
-      }
-
-      debugPrint('[SwarmView] Uploaded torrent infoHash: $infoHash');
-      if (mounted) setState(() {
-        if (!_torrents.any((t) => t['info_hash'] == infoHash)) {
-          _torrents.add(t);
-          _applySearch();
-        }
-      });
-    } catch (e, st) {
-      debugPrint('[SwarmView] Failed to add local encrypted torrent: $e\n$st');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error adding torrent: $e')),
-        );
-      }
-    }
+  void _onSearchChanged(String v) {
+    setState(() => _search = v.trim().toLowerCase());
   }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final filtered = _torrents.where((t) {
+      final meta = t['torrent_metadata'] as Map? ?? {};
+      final title = (meta['title'] as String?) ?? t['name'];
+      final artist = (meta['artist'] as String?) ?? '';
+      return title.toLowerCase().contains(_search)
+          || artist.toLowerCase().contains(_search)
+          || (t['name'] as String).toLowerCase().contains(_search);
+    }).toList();
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Audyn Swarm'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _refresh,
-            tooltip: 'Refresh torrents',
-          ),
-        ],
+        title: const Text('Swarm'),
+        actions: [ IconButton(onPressed: _fetchSupabaseTorrents, icon: const Icon(Icons.refresh)) ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            padding: const EdgeInsets.all(8),
             child: TextField(
               decoration: const InputDecoration(
-                hintText: 'Search torrents...',
+                hintText: 'Search torrents…',
                 prefixIcon: Icon(Icons.search),
                 border: OutlineInputBorder(),
               ),
-              onChanged: (val) {
-                _search = val;
-                _applySearch();
-              },
+              onChanged: _onSearchChanged,
             ),
           ),
         ),
@@ -498,24 +192,92 @@ class _SwarmViewState extends State<SwarmView> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _isError
-          ? Center(
-        child: Text(
-          'Error loading torrents\nPlease try again later.',
-          style: theme.textTheme.bodyMedium,
-          textAlign: TextAlign.center,
-        ),
-      )
-          : _filtered.isEmpty
-          ? Center(
-        child: Text(
-          'No torrents found.',
-          style: theme.textTheme.bodyMedium,
-        ),
-      )
+          ? Center(child: Text('Error loading torrents', style: theme.textTheme.bodyLarge))
+          : filtered.isEmpty
+          ? Center(child: Text('No torrents found', style: theme.textTheme.bodyLarge))
           : ListView.builder(
-        itemCount: _filtered.length,
-        itemBuilder: (_, index) => _buildTorrentTile(_filtered[index], theme),
+        itemCount: filtered.length,
+        itemBuilder: (_, i) {
+          final t = filtered[i];
+          final meta = (t['torrent_metadata'] as Map?)?.cast<String, dynamic>() ?? {};
+
+          final title = meta['title'] ?? t['name'];
+          final artist = meta['artist'] ?? 'Unknown';
+          final album = meta['album'] ?? '';
+          final base64 = meta['album_art_url'] as String?;
+
+          // Decode base64 to image
+          Widget leading;
+          if (base64 != null && base64.isNotEmpty) {
+            try {
+              final bytes = base64Decode(base64);
+              leading = ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.memory(
+                  bytes,
+                  width: 50,
+                  height: 50,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) =>
+                      _defaultIcon(context), // Fallback to icon on error
+                ),
+              );
+            } catch (e) {
+              debugPrint('Album art decode error: $e');
+              leading = _defaultIcon(context);
+            }
+          } else {
+            leading = _defaultIcon(context);
+          }
+
+          // Determine trailing icon (status)
+          final isSeeding = t['state'] == 5 || t['seed_mode'] == true;
+          final isLocal = (t['vault_files'] as List?)?.isNotEmpty ?? false;
+
+          Widget trailing;
+          if (isLocal) {
+            trailing = Icon(Icons.check_circle, color: Theme.of(context).colorScheme.secondary);
+          } else if (isSeeding) {
+            trailing = Icon(Icons.cloud_upload, color: Theme.of(context).colorScheme.primary);
+          } else {
+            trailing = Icon(Icons.cloud_download, color: Colors.grey.shade400);
+          }
+
+          return ListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            leading: leading,
+            title: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            subtitle: Text(
+              '$artist | $album',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: trailing,
+            onTap: () {
+              _libtorrent.startTorrentByHash(t['info_hash']);
+            },
+          );
+        },
+
       ),
     );
   }
+  Widget _defaultIcon(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: 50,
+      height: 50,
+      decoration: BoxDecoration(
+        color: theme.colorScheme.onSurface.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Icon(Icons.music_note_outlined, color: Colors.grey),
+    );
+  }
+
 }
