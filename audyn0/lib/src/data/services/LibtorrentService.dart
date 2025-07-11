@@ -233,9 +233,16 @@ class LibtorrentService {
     }
   }
 
-  Future<void> startTorrentByHash(String infoHash) async {
-    if (infoHash.isEmpty || infoHash.length != 40 || !RegExp(r'^[a-f0-9]+$').hasMatch(infoHash)) {
-      debugPrint('[LibtorrentService] startTorrentByHash called with invalid infoHash: $infoHash');
+  Future<void> startTorrentByHash(String? infoHash) async {
+    if (infoHash == null || infoHash.isEmpty) {
+      debugPrint('[LibtorrentService] ❌ startTorrentByHash: infoHash is null or empty');
+      return;
+    }
+
+    // Validate length and format (40-char lowercase hex string)
+    final isValidHash = RegExp(r'^[a-f0-9]{40}$').hasMatch(infoHash);
+    if (!isValidHash) {
+      debugPrint('[LibtorrentService] ❌ startTorrentByHash: invalid format for infoHash: "$infoHash"');
       return;
     }
 
@@ -244,12 +251,108 @@ class LibtorrentService {
         'startTorrentByHash',
         {'infoHash': infoHash},
       );
-      if (started == null || !started) {
-        debugPrint('[LibtorrentService] startTorrentByHash: Failed to start torrent for hash $infoHash');
+
+      if (started == true) {
+        debugPrint('[LibtorrentService] ✅ Torrent started for hash: $infoHash');
+      } else {
+        debugPrint('[LibtorrentService] ⚠️ Torrent not started (null or false) for hash: $infoHash');
       }
     } catch (e, st) {
-      debugPrint('[LibtorrentService] startTorrentByHash failed: $e\n$st');
+      debugPrint('[LibtorrentService] 🧨 startTorrentByHash threw exception: $e\n$st');
     }
   }
+
+  Future<void> startOrRestartTorrentByHash(String infoHash) async {
+    final isRunning = await isTorrentRunning(infoHash);
+
+    if (isRunning) {
+      final isHealthy = await isTorrentHealthy(infoHash);
+      if (!isHealthy) {
+        debugPrint('[LibtorrentService] ⚠️ Torrent $infoHash is stale, removing and re-adding');
+        await removeTorrent(infoHash, removeData: false);
+        await addTorrentByHash(infoHash);
+      } else {
+        debugPrint('[LibtorrentService] ✅ Torrent $infoHash is already running and healthy');
+      }
+    } else {
+      await addTorrentByHash(infoHash);
+      debugPrint('[LibtorrentService] ▶️ Torrent $infoHash added and started');
+    }
+  }
+  /// Checks if a torrent with the given infoHash is currently running
+  Future<bool> isTorrentRunning(String infoHash) async {
+    try {
+      final torrents = await getAllTorrents();
+      return torrents.any((t) => t['infoHash'] == infoHash);
+    } catch (e, st) {
+      debugPrint('[LibtorrentService] isTorrentRunning failed: $e\n$st');
+      return false;
+    }
+  }
+
+  /// Basic health check — expand this based on your criteria
+  /// For now, returns true if torrent has at least 1 peer or is seeding
+  Future<bool> isTorrentHealthy(String infoHash) async {
+    try {
+      final torrents = await getAllTorrents();
+      final torrent = torrents.firstWhere(
+            (t) => t['infoHash'] == infoHash,
+        orElse: () => {},
+      );
+
+      final peers = int.tryParse('${torrent['numPeers'] ?? 0}') ?? 0;
+      final progress = double.tryParse('${torrent['progress'] ?? 0.0}') ?? 0.0;
+
+      // Example criteria: has peers or is nearly complete
+      return peers > 0 || progress >= 0.95;
+    } catch (e, st) {
+      debugPrint('[LibtorrentService] isTorrentHealthy failed: $e\n$st');
+      return false;
+    }
+  }
+
+  /// Re-adds torrent from known local .torrent file by hash
+  Future<void> addTorrentByHash(String infoHash) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final torrentPath = p.join(dir.path, 'torrents', '$infoHash.torrent');
+      final savePath = p.join(dir.path, 'downloads', infoHash);
+
+      final exists = await File(torrentPath).exists();
+      if (!exists) {
+        debugPrint('[LibtorrentService] ❌ Torrent file missing: $torrentPath');
+        return;
+      }
+
+      final success = await addTorrent(torrentPath, savePath);
+      if (success) {
+        debugPrint('[LibtorrentService] ✅ Re-added torrent for $infoHash');
+      } else {
+        debugPrint('[LibtorrentService] ❌ Failed to re-add torrent for $infoHash');
+      }
+    } catch (e, st) {
+      debugPrint('[LibtorrentService] addTorrentByHash failed: $e\n$st');
+    }
+  }
+
+  Future<void> stopTorrentByHash(String infoHash) async {
+    if (infoHash.isEmpty) return;
+
+    try {
+      final bool? stopped = await _channel.invokeMethod<bool>(
+        'stopTorrentByHash',
+        {'infoHash': infoHash},
+      );
+
+      if (stopped == true) {
+        debugPrint('[LibtorrentService] 🛑 Torrent stopped for hash: $infoHash');
+      } else {
+        debugPrint('[LibtorrentService] ⚠️ Torrent not stopped for hash: $infoHash');
+      }
+    } catch (e, st) {
+      debugPrint('[LibtorrentService] stopTorrentByHash threw: $e\n$st');
+    }
+  }
+
 
 }

@@ -130,6 +130,20 @@ class MainActivity : AudioServiceFragmentActivity() {
                     }
 
 
+                    "stopTorrentByHash" -> {
+                        val args = call.arguments as? Map<*, *>
+                        val infoHash = args?.get("infoHash") as? String
+
+                        if (infoHash.isNullOrEmpty()) {
+                            result.error("INVALID_ARGUMENT", "infoHash is required", null)
+                            return@setMethodCallHandler
+                        }
+
+                        runCatching {
+                            libtorrentWrapper.stopTorrentByHash(infoHash)
+                        }.onSuccess(result::success)
+                            .onFailure { e -> result.error("ERROR", e.localizedMessage, null) }
+                    }
 
 
                     /*───────────────────────────────*

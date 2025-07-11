@@ -12,7 +12,6 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:audyn/src/bloc/player/player_bloc.dart';
 import 'package:audyn/src/core/constants/assets.dart';
 import 'package:audyn/src/core/di/service_locator.dart';
-import 'package:audyn/src/core/router/app_router.dart';
 import 'package:audyn/src/data/repositories/player_repository.dart';
 
 class SongListTile extends StatefulWidget {

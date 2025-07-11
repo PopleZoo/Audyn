@@ -100,7 +100,6 @@ class LibtorrentWrapper(private val context: Context) {
     // 🔽 NEW JNI declaration
     external fun getInfoHashFromBytes(torrentBytes: ByteArray): String
 
-
-
+    external fun stopTorrentByHash(infoHash: String): Boolean
 
 }

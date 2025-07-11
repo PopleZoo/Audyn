@@ -241,6 +241,26 @@ class LibtorrentWrapper {
     }
   }
 
+  /// Stops a torrent by its infoHash (if already added).
+  static Future<bool> stopTorrentByHash(String infoHash) async {
+    print('stopTorrentByHash called with infoHash: $infoHash');
+    if (infoHash.isEmpty) {
+      print('ERROR: infoHash is empty!');
+      return false;
+    }
+
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'stopTorrentByHash',
+        {'infoHash': infoHash},
+      );
+      return result == true;
+    } catch (e, st) {
+      debugPrint('[LibtorrentWrapper] stopTorrentByHash error: $e\n$st');
+      return false;
+    }
+  }
+
 
 
 }

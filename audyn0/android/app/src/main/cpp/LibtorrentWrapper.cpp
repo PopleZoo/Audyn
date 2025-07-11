@@ -25,6 +25,8 @@
 #include <jni.h>
 #include <libtorrent/torrent_handle.hpp>
 #include <libtorrent/sha1_hash.hpp>
+#include <libtorrent/hex.hpp>
+
 
 #define  LOG_TAG  "LibtorrentWrapper"
 #define  LOGI(...)  ((void)__android_log_print(ANDROID_LOG_INFO ,LOG_TAG,__VA_ARGS__))
@@ -36,7 +38,6 @@ using lt::torrent_flags::paused;
 using lt::torrent_flags::disable_dht;
 using lt::torrent_flags::disable_lsd;
 using lt::torrent_flags::disable_pex;
-
 
 // ─────────────────────────  globals  ──────────────────────────
 static std::unique_ptr<session> g_ses;
@@ -681,6 +682,38 @@ Java_com_example_audyn_LibtorrentWrapper_getInfoHashFromBytes(
         std::string err = "Exception: " + std::string(ex.what());
         return env->NewStringUTF(err.c_str());
     }
+}
+JNIEXPORT jboolean JNICALL
+Java_com_example_audyn_LibtorrentWrapper_stopTorrentByHash(JNIEnv *env, jobject /* this */, jstring infoHashJ) {
+    const char *infoHashC = env->GetStringUTFChars(infoHashJ, nullptr);
+    std::string infoHash(infoHashC);
+    env->ReleaseStringUTFChars(infoHashJ, infoHashC);
+
+    if (infoHash.length() != 40) {
+        LOGE("stopTorrentByHash: invalid hash length: %s", infoHash.c_str());
+        return JNI_FALSE;
+    }
+
+    try {
+        lt::sha1_hash hash;
+        lt::from_hex(infoHash.c_str(), infoHash.size(), hash.data());
+
+        std::lock_guard<std::mutex> lk(g_mtx);
+        if (!g_ses) return JNI_FALSE;
+
+        auto handle = g_ses->find_torrent(hash);
+        if (handle.is_valid()) {
+            handle.pause();
+            LOGI("Torrent paused for hash: %s", infoHash.c_str());
+            return JNI_TRUE;
+        }
+    } catch (const std::exception& e) {
+        LOGE("stopTorrentByHash exception: %s", e.what());
+    } catch (...) {
+        LOGE("stopTorrentByHash: unknown exception");
+    }
+
+    return JNI_FALSE;
 }
 
 
