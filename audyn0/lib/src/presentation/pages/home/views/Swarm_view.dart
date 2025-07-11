@@ -14,6 +14,13 @@ import '../../../../bloc/Downloads/DownloadsBloc.dart';
 import '../../../../core/di/service_locator.dart';
 import '../../../../data/services/LibtorrentService.dart';
 
+class _UploadItem {
+  final String infoHash;
+  final String name;
+  final Metadata meta;
+
+  _UploadItem(this.infoHash, this.name, this.meta);
+}
 
 class SwarmView extends StatefulWidget {
   const SwarmView({super.key});
@@ -32,22 +39,81 @@ class _SwarmViewState extends State<SwarmView> {
   String _search = '';
   Set<String> _localSongKeys = {};
 
+  List<_UploadItem> _supabaseUploadQueue = [];
+
+  final ScrollController _scrollController = ScrollController();
+  int _currentPage = 0;
+  final int _pageSize = 50;
+  bool _isLoadingMore = false;
+  bool _hasMore = true;
+
+
   @override
   void initState() {
     super.initState();
     _init();
+
+    _scrollController.addListener(() {
+      if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 200) {
+        _loadMore();
+      }
+    });
   }
 
+
   Future<void> _init() async {
+    setState(() {
+      _isLoading = true;
+      _isError = false;
+    });
+
+    try {
+      await _fetchSupabaseTorrents(); // fetch Supabase data first, show list quickly
+    } catch (e, st) {
+      debugPrint('[SwarmView] fetchSupabaseTorrents error: $e\n$st');
+      setState(() => _isError = true);
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+
+    // Now start seeding local songs in the background, no UI block
     try {
       _seeder = await MusicSeederService.create();
-      await _validateAndUploadLocalSongs();
-      await _fetchSupabaseTorrents();
+      // run seeding without awaiting UI-wise, but handle errors inside
+      _validateAndUploadLocalSongs();
     } catch (e, st) {
-      debugPrint('[SwarmView] init error: $e\n$st');
-      setState(() => _isError = true);
+      debugPrint('[SwarmView] validateAndUploadLocalSongs error: $e\n$st');
     }
   }
+
+  Future<void> _loadMore() async {
+    if (_isLoadingMore || !_hasMore) return;
+
+    setState(() => _isLoadingMore = true);
+    _currentPage++;
+
+    try {
+      final data = await Supabase.instance.client
+          .from('torrents')
+          .select('info_hash, name, created_at, torrent_metadata(title, artist, album, album_art_url)')
+          .order('created_at', ascending: false)
+          .range(_currentPage * _pageSize, _currentPage * _pageSize + _pageSize - 1);
+
+      final fetched = List<Map<String, dynamic>>.from(data as List);
+      if (fetched.isEmpty) {
+        _hasMore = false;
+      } else {
+        setState(() => _torrents.addAll(fetched));
+      }
+    } catch (e, st) {
+      debugPrint('[SwarmView] loadMore error: $e\n$st');
+    } finally {
+      setState(() => _isLoadingMore = false);
+    }
+  }
+
 
   Future<void> _validateAndUploadLocalSongs() async {
     if (!await _audioQuery.permissionsRequest()) return;
@@ -55,9 +121,8 @@ class _SwarmViewState extends State<SwarmView> {
     final songs = await _audioQuery.querySongs();
     final existingSongPaths = songs.map((s) => s.data).toSet();
 
-    // Clean up orphaned torrent files
+    // Clean orphaned torrent files
     final seededTorrents = await _seeder!.getAllSeededTorrents();
-
     for (final encTorrentPath in seededTorrents) {
       final base = p.basenameWithoutExtension(encTorrentPath);
       final norm = MusicSeederService.norm(base);
@@ -68,10 +133,8 @@ class _SwarmViewState extends State<SwarmView> {
       if (!isStillPresent) {
         final infoHash = await _getInfoHashFromPath(encTorrentPath);
         if (infoHash != null) {
-          // Stop and remove from libtorrent
           await _libtorrent.removeTorrent(infoHash, removeData: false);
 
-          // Remove peer record from Supabase
           final user = Supabase.instance.client.auth.currentUser;
           if (user != null) {
             await Supabase.instance.client
@@ -81,17 +144,16 @@ class _SwarmViewState extends State<SwarmView> {
           }
         }
 
-        // Delete the local encrypted torrent file
         try {
           await File(encTorrentPath).delete();
-          debugPrint('[Cleanup] Deleted orphaned .torrent.enc file: $encTorrentPath');
+          debugPrint('[Cleanup] Deleted orphaned torrent: $encTorrentPath');
         } catch (e) {
-          debugPrint('[Cleanup] Failed to delete $encTorrentPath: $e');
+          debugPrint('[Cleanup] Failed to delete: $encTorrentPath\n$e');
         }
       }
     }
 
-    // Seed valid local songs
+    // Seed valid songs, defer uploads
     for (final song in songs) {
       final meta = await _extractValidMetadata(song.data);
       if (meta == null) continue;
@@ -106,8 +168,49 @@ class _SwarmViewState extends State<SwarmView> {
       if (infoHash == null) continue;
 
       await _libtorrent.startTorrentByHash(infoHash);
-      await _uploadToSupabase(infoHash, normKey, meta);
+      _supabaseUploadQueue.add(_UploadItem(infoHash, normKey, meta));
     }
+
+    await _runSupabaseUploads();
+  }
+
+  Future<void> _runSupabaseUploads() async {
+    final total = _supabaseUploadQueue.length;
+    if (total == 0) return;
+
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+
+    for (final item in _supabaseUploadQueue) {
+      try {
+        final existing = await Supabase.instance.client
+            .from('torrent_metadata')
+            .select('title, artist, album, album_art_url')
+            .eq('info_hash', item.infoHash)
+            .maybeSingle();
+
+        if (existing is! Map) continue;
+
+        final encodedArt = item.meta.albumArt != null
+            ? base64Encode(item.meta.albumArt!)
+            : null;
+
+        final alreadyUploaded = existing != null &&
+            existing['title'] == item.meta.trackName &&
+            existing['artist'] == item.meta.trackArtistNames?.join(', ') &&
+            existing['album'] == item.meta.albumName &&
+            existing['album_art_url'] == encodedArt;
+
+        if (!alreadyUploaded) {
+          await _uploadToSupabase(item.infoHash, item.name, item.meta);
+        }
+      } catch (e) {
+        debugPrint('[Upload] Skipped failed upload for ${item.name}: $e');
+      }
+
+    }
+
+    _supabaseUploadQueue.clear();
   }
 
 
@@ -116,10 +219,10 @@ class _SwarmViewState extends State<SwarmView> {
   Future<Metadata?> _extractValidMetadata(String filePath) async {
     try {
       final meta = await MetadataRetriever.fromFile(File(filePath));
-      if ((meta.trackName?.isNotEmpty ?? false)
-          && (meta.trackArtistNames?.isNotEmpty ?? false)
-          && (meta.albumName?.isNotEmpty ?? false)
-          && (meta.albumArt?.isNotEmpty ?? false)) {
+      if ((meta.trackName?.isNotEmpty ?? false) &&
+          (meta.trackArtistNames?.isNotEmpty ?? false) &&
+          (meta.albumName?.isNotEmpty ?? false) &&
+          ((meta.albumArt?.isNotEmpty ?? false))) {
         return meta;
       }
     } catch (_) { }
@@ -137,6 +240,8 @@ class _SwarmViewState extends State<SwarmView> {
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null) return;
 
+    final now = DateTime.now().toIso8601String();
+
     // Upsert torrent
     await Supabase.instance.client
         .from('torrents')
@@ -144,7 +249,7 @@ class _SwarmViewState extends State<SwarmView> {
       'info_hash': infoHash,
       'name': name,
       'owner_id': user.id,
-      'created_at': DateTime.now().toIso8601String(),
+      'created_at': now,
     }, onConflict: 'info_hash');
 
     final albumArtBase64 = meta.albumArt != null
@@ -157,7 +262,7 @@ class _SwarmViewState extends State<SwarmView> {
         .upsert({
       'info_hash': infoHash,
       'title': meta.trackName,
-      'artist': meta.trackArtistNames!.join(', '),
+      'artist': meta.trackArtistNames?.join(', ') ?? '',
       'album': meta.albumName,
       'album_art_url': albumArtBase64,
     }, onConflict: 'info_hash');
@@ -171,7 +276,7 @@ class _SwarmViewState extends State<SwarmView> {
           .upsert({
         'user_id': user.id,
         'info_hash': infoHash,
-        'last_seen': DateTime.now().toIso8601String(),
+        'last_seen': now,
         'ip_enc': ipEnc,
       }, onConflict: 'user_id,info_hash');
     }
@@ -196,35 +301,60 @@ class _SwarmViewState extends State<SwarmView> {
     return null;
   }
 
+  Future<void> _fetchSupabaseTorrents({
+    int pageNumber = 0,
+    int pageSize = 50,
+  }) async {
+    if (pageNumber == 0) {
+      _currentPage = 0;
+      _hasMore = true;
+    }
 
-  /// 2) Fetch Supabase torrents + metadata
-  Future<void> _fetchSupabaseTorrents() async {
     setState(() {
       _isLoading = true;
       _isError = false;
     });
 
     try {
-      // NOTE: v2 API returns data directly or throws
-      final data = await Supabase.instance.client
+      debugPrint('Fetching torrents, page: $pageNumber, size: $pageSize');
+
+      final query = Supabase.instance.client
           .from('torrents')
-          .select('info_hash, name, created_at, torrent_metadata(*)')
+          .select('info_hash, name, created_at, torrent_metadata(title, artist, album, album_art_url)')
           .order('created_at', ascending: false)
-          .limit(100);
+          .range(pageNumber * pageSize, pageNumber * pageSize + pageSize - 1);
 
-      _torrents = List<Map<String, dynamic>>.from(data as List);
+      final data = await query;
+      debugPrint('Fetched ${data.length} records from Supabase.');
 
+      final fetched = List<Map<String, dynamic>>.from(data as List);
+
+      if (pageNumber == 0) {
+        _torrents = fetched;
+      } else {
+        _torrents.addAll(fetched);
+      }
+
+      if (fetched.length < pageSize) {
+        _hasMore = false;
+        debugPrint('No more torrents to load.');
+      }
     } catch (e, st) {
-      debugPrint('[SwarmView] fetch error: $e\n$st');
+      debugPrint('[SwarmView] fetchSupabaseTorrents error: $e\n$st');
       setState(() => _isError = true);
     } finally {
       setState(() => _isLoading = false);
     }
   }
 
-  void _onSearchChanged(String v) {
-    setState(() => _search = v.trim().toLowerCase());
+
+  void _onSearchChanged(String value) {
+    setState(() {
+      _search = value.trim().toLowerCase();
+    });
   }
+
+
 
   @override
   Widget build(BuildContext context) {
@@ -264,9 +394,17 @@ class _SwarmViewState extends State<SwarmView> {
           : filtered.isEmpty
           ? Center(child: Text('No torrents found', style: theme.textTheme.bodyLarge))
           : ListView.builder(
-        itemCount: filtered.length,
-        itemBuilder: (_, i) {
-          final t = filtered[i];
+        controller: _scrollController,
+        itemCount: filtered.length + (_isLoadingMore ? 1 : 0),
+        itemBuilder: (context, index) {
+          if (index >= filtered.length) {
+            // Show loading indicator at the bottom while loading more
+            return const Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+          final t = filtered[index];
           final meta = (t['torrent_metadata'] as Map?)?.cast<String, dynamic>() ?? {};
 
           final title = meta['title'] ?? t['name'];
@@ -338,13 +476,13 @@ class _SwarmViewState extends State<SwarmView> {
       ),
     );
   }
+
   Widget _defaultIcon(BuildContext context) {
-    final theme = Theme.of(context);
     return Container(
       width: 50,
       height: 50,
       decoration: BoxDecoration(
-        color: theme.colorScheme.onSurface.withOpacity(0.1),
+        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.1),
         borderRadius: BorderRadius.circular(8),
       ),
       child: const Icon(Icons.music_note_outlined, color: Colors.grey),
