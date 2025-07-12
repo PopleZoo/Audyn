@@ -14,6 +14,7 @@ import '../../../../bloc/Downloads/DownloadsBloc.dart';
 import '../../../../core/di/service_locator.dart';
 import '../../../../data/services/LibtorrentService.dart';
 
+
 class _UploadItem {
   final String infoHash;
   final String name;
@@ -32,18 +33,18 @@ class _SwarmViewState extends State<SwarmView> {
   final _libtorrent = LibtorrentService();
   final _audioQuery = OnAudioQuery();
   MusicSeederService? _seeder;
-
+  Timer? _searchDebounce;
   List<Map<String, dynamic>> _torrents = [];
   bool _isLoading = true;
   bool _isError = false;
   String _search = '';
   Set<String> _localSongKeys = {};
-
+  List<Map<String, dynamic>> _searchResults = [];
   List<_UploadItem> _supabaseUploadQueue = [];
 
   final ScrollController _scrollController = ScrollController();
   int _currentPage = 0;
-  final int _pageSize = 50;
+  final int _pageSize = 100;
   bool _isLoadingMore = false;
   bool _hasMore = true;
 
@@ -54,10 +55,17 @@ class _SwarmViewState extends State<SwarmView> {
     _init();
 
     _scrollController.addListener(() {
-      if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 200) {
+      if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - _pageSize) {
         _loadMore();
       }
     });
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _searchDebounce?.cancel();
+    super.dispose();
   }
 
 
@@ -300,10 +308,10 @@ class _SwarmViewState extends State<SwarmView> {
     }
     return null;
   }
-
   Future<void> _fetchSupabaseTorrents({
     int pageNumber = 0,
     int pageSize = 50,
+    String? search,
   }) async {
     if (pageNumber == 0) {
       _currentPage = 0;
@@ -316,31 +324,53 @@ class _SwarmViewState extends State<SwarmView> {
     });
 
     try {
-      debugPrint('Fetching torrents, page: $pageNumber, size: $pageSize');
+      List<Map<String, dynamic>> fetched = [];
 
-      final query = Supabase.instance.client
-          .from('torrents')
-          .select('info_hash, name, created_at, torrent_metadata(title, artist, album, album_art_url)')
-          .order('created_at', ascending: false)
-          .range(pageNumber * pageSize, pageNumber * pageSize + pageSize - 1);
+      if (search == null || search
+          .trim()
+          .isEmpty) {
+        final data = await Supabase.instance.client
+            .from('torrents')
+            .select(
+            'info_hash, name, created_at, torrent_metadata(title, artist, album, album_art_url)')
+            .order('created_at', ascending: false)
+            .range(pageNumber * pageSize, pageNumber * pageSize + pageSize - 1);
 
-      final data = await query;
-      debugPrint('Fetched ${data.length} records from Supabase.');
+        fetched = List<Map<String, dynamic>>.from(data as List);
 
-      final fetched = List<Map<String, dynamic>>.from(data as List);
-
-      if (pageNumber == 0) {
-        _torrents = fetched;
+        if (pageNumber == 0) {
+          _torrents = fetched;
+        } else {
+          _torrents.addAll(fetched);
+        }
       } else {
-        _torrents.addAll(fetched);
+        // Add your search logic here if needed, e.g. call to RPC or filtered fetch
+        final rpcData = await Supabase.instance.client.rpc(
+          'search_torrents',
+          params: {
+            'search_text': search.trim(),
+            'limit_val': pageSize,
+            'offset_val': pageNumber * pageSize,
+          },
+        );
+
+        fetched = List<Map<String, dynamic>>.from(rpcData as List);
+
+        // Map the metadata key
+        for (final item in fetched) {
+          item['torrent_metadata'] = item.remove('metadata') ?? {};
+        }
+
+        if (pageNumber == 0) {
+          _searchResults = fetched;
+        } else {
+          _searchResults.addAll(fetched);
+        }
       }
 
-      if (fetched.length < pageSize) {
-        _hasMore = false;
-        debugPrint('No more torrents to load.');
-      }
+      if (fetched.length < pageSize) _hasMore = false;
     } catch (e, st) {
-      debugPrint('[SwarmView] fetchSupabaseTorrents error: $e\n$st');
+      debugPrint('[SwarmView] fetchSupabaseTorrents final catch: $e\n$st');
       setState(() => _isError = true);
     } finally {
       setState(() => _isLoading = false);
@@ -348,30 +378,65 @@ class _SwarmViewState extends State<SwarmView> {
   }
 
 
-  void _onSearchChanged(String value) {
-    setState(() {
+
+
+
+    void _onSearchChanged(String value) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () {
       _search = value.trim().toLowerCase();
+      _fetchSupabaseTorrents(search: _search);
     });
   }
-
 
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final filtered = _torrents.where((t) {
-      final meta = t['torrent_metadata'] as Map? ?? {};
-      final title = (meta['title'] as String?) ?? t['name'];
-      final artist = (meta['artist'] as String?) ?? '';
-      return title.toLowerCase().contains(_search)
-          || artist.toLowerCase().contains(_search)
-          || (t['name'] as String).toLowerCase().contains(_search);
-    }).toList();
+
+    // Get the base list from search or full list
+    final baseList = _search.isNotEmpty ? _searchResults : _torrents;
+
+    // Filter local/seeding torrents based on search (by normalized name or metadata)
+    final filteredLocalKeys = _localSongKeys.where((key) {
+      return _search.isEmpty || key.contains(_search.toLowerCase());
+    }).toSet();
+
+    // Build a combined list:
+    // 1) All baseList torrents matching search
+    // 2) Plus any local/seeding torrents NOT already in baseList, matching search
+
+    // Map baseList to a set of normalized names for quick check
+    final baseListKeys = baseList
+        .map((t) => MusicSeederService.norm(t['name'] as String? ?? '').toLowerCase())
+        .toSet();
+
+    // Local-only keys not in baseList
+    final localOnlyKeys = filteredLocalKeys.difference(baseListKeys);
+
+    // Create dummy torrent entries for these local-only keys (adjust as needed)
+    final localOnlyTorrents = localOnlyKeys.map((key) {
+      return {
+        'name': key,
+        'torrent_metadata': {}, // no metadata, or you can store some cached metadata for local songs
+        'state': 5, // assume seeding
+        'seed_mode': true,
+        'vault_files': [],
+      };
+    });
+
+    // Combine base list + local-only torrents
+    final displayed = [...baseList, ...localOnlyTorrents];
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Swarm'),
-        actions: [ IconButton(onPressed: _fetchSupabaseTorrents, icon: const Icon(Icons.refresh)) ],
+        actions: [
+          IconButton(
+            onPressed: () => _fetchSupabaseTorrents(search: _search),
+            icon: const Icon(Icons.refresh),
+          )
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
           child: Padding(
@@ -391,20 +456,20 @@ class _SwarmViewState extends State<SwarmView> {
           ? const Center(child: CircularProgressIndicator())
           : _isError
           ? Center(child: Text('Error loading torrents', style: theme.textTheme.bodyLarge))
-          : filtered.isEmpty
+          : displayed.isEmpty
           ? Center(child: Text('No torrents found', style: theme.textTheme.bodyLarge))
           : ListView.builder(
         controller: _scrollController,
-        itemCount: filtered.length + (_isLoadingMore ? 1 : 0),
+        itemCount: displayed.length + (_isLoadingMore ? 1 : 0),
         itemBuilder: (context, index) {
-          if (index >= filtered.length) {
-            // Show loading indicator at the bottom while loading more
+          if (index >= displayed.length) {
             return const Padding(
               padding: EdgeInsets.symmetric(vertical: 16),
               child: Center(child: CircularProgressIndicator()),
             );
           }
-          final t = filtered[index];
+
+          final t = displayed[index];
           final meta = (t['torrent_metadata'] as Map?)?.cast<String, dynamic>() ?? {};
 
           final title = meta['title'] ?? t['name'];
@@ -412,7 +477,6 @@ class _SwarmViewState extends State<SwarmView> {
           final album = meta['album'] ?? '';
           final base64 = meta['album_art_url'] as String?;
 
-          // Decode base64 to image
           Widget leading;
           if (base64 != null && base64.isNotEmpty) {
             try {
@@ -424,8 +488,7 @@ class _SwarmViewState extends State<SwarmView> {
                   width: 50,
                   height: 50,
                   fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) =>
-                      _defaultIcon(context), // Fallback to icon on error
+                  errorBuilder: (_, __, ___) => _defaultIcon(context),
                 ),
               );
             } catch (e) {
@@ -436,11 +499,10 @@ class _SwarmViewState extends State<SwarmView> {
             leading = _defaultIcon(context);
           }
 
-          // Determine trailing icon (status)
           final torrentNameKey = MusicSeederService.norm(t['name'] as String? ?? '');
           final isSeeding = t['state'] == 5 || t['seed_mode'] == true;
-          final isLocal = _localSongKeys.contains(torrentNameKey)
-              || ((t['vault_files'] as List?)?.isNotEmpty ?? false);
+          final isLocal = _localSongKeys.contains(torrentNameKey) ||
+              ((t['vault_files'] as List?)?.isNotEmpty ?? false);
 
           Widget trailing;
           if (isLocal) {
@@ -450,7 +512,6 @@ class _SwarmViewState extends State<SwarmView> {
           } else {
             trailing = Icon(Icons.cloud_download, color: Colors.grey.shade400);
           }
-
 
           return ListTile(
             contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -468,14 +529,14 @@ class _SwarmViewState extends State<SwarmView> {
             ),
             trailing: trailing,
             onTap: () {
-              showTorrentDialog(context, t,_localSongKeys);
+              showTorrentDialog(context, t, _localSongKeys);
             },
           );
         },
-
       ),
     );
   }
+
 
   Widget _defaultIcon(BuildContext context) {
     return Container(
@@ -564,19 +625,18 @@ class _SwarmViewState extends State<SwarmView> {
                   } catch (_) {}
                 }
 
-                final savePath = '/storage/emulated/0/Download/music'; // adjust as needed
+                final savePath = '/storage/emulated/0/Music'; // adjust as needed
 
                 context.read<DownloadsBloc>().add(
-                  DownloadRequested(
+                  StartDownload(
                     infoHash: infoHash,
                     name: torrent['name'] ?? '',
-                    title: title,
-                    artist: artist,
-                    album: album,
-                    albumArt: art,
-                    filePath: savePath,
+                    destinationFolder: savePath,
+                    // Optionally add playlist if you have one, or empty list:
+                    playlist: [],
                   ),
                 );
+
 
                 Navigator.of(context).pop();
               },

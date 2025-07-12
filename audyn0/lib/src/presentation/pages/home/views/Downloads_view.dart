@@ -9,28 +9,46 @@ class DownloadsView extends StatelessWidget {
   Color _statusColor(BuildContext context, String status) {
     final cs = Theme.of(context).colorScheme;
     switch (status) {
-      case 'completed': return cs.secondary;
-      case 'downloading': return cs.primary;
-      case 'failed': return cs.error;
-      default: return cs.outline;
+      case 'completed':
+        return cs.secondary;
+      case 'downloading':
+        return cs.primary;
+      case 'failed':
+        return cs.error;
+      case 'cancelled':
+        return cs.error.withOpacity(0.7);
+      default:
+        return cs.outline;
     }
   }
 
   IconData _statusIcon(String status) {
     switch (status) {
-      case 'completed': return Icons.check_circle;
-      case 'downloading': return Icons.downloading;
-      case 'failed': return Icons.error;
-      default: return Icons.help_outline;
+      case 'completed':
+        return Icons.check_circle;
+      case 'downloading':
+        return Icons.downloading;
+      case 'failed':
+        return Icons.error;
+      case 'cancelled':
+        return Icons.cancel;
+      default:
+        return Icons.help_outline;
     }
   }
 
   String _statusText(String status) {
     switch (status) {
-      case 'completed': return 'Completed';
-      case 'downloading': return 'Downloading…';
-      case 'failed': return 'Failed';
-      default: return 'Unknown';
+      case 'completed':
+        return 'Completed';
+      case 'downloading':
+        return 'Downloading…';
+      case 'failed':
+        return 'Failed';
+      case 'cancelled':
+        return 'Cancelled';
+      default:
+        return 'Unknown';
     }
   }
 
@@ -51,11 +69,13 @@ class DownloadsView extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.download_for_offline, size: 64, color: cs.onBackground.withOpacity(0.3)),
+                  Icon(Icons.download_for_offline,
+                      size: 64, color: cs.onBackground.withOpacity(0.3)),
                   const SizedBox(height: 16),
                   Text(
                     'No downloads found.',
-                    style: theme.textTheme.bodyLarge?.copyWith(color: cs.onBackground.withOpacity(0.6)),
+                    style: theme.textTheme.bodyLarge
+                        ?.copyWith(color: cs.onBackground.withOpacity(0.6)),
                   ),
                 ],
               ),
@@ -69,7 +89,8 @@ class DownloadsView extends StatelessWidget {
             itemBuilder: (context, index) {
               final track = state.downloads[index];
 
-              final title = (track.title?.isNotEmpty ?? false) ? track.title! : track.name;
+              final title =
+              (track.title?.isNotEmpty ?? false) ? track.title! : track.name;
               final artist = track.artist ?? 'Unknown Artist';
               final album = track.album ?? '';
               final status = track.status;
@@ -82,7 +103,9 @@ class DownloadsView extends StatelessWidget {
                 borderRadius: BorderRadius.circular(12),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(12),
-                  onTap: () {}, // Future: open or play
+                  onTap: () {
+                    // TODO: Open or play the downloaded file
+                  },
                   child: Padding(
                     padding: const EdgeInsets.all(14),
                     child: Row(
@@ -136,7 +159,8 @@ class DownloadsView extends StatelessWidget {
                               const SizedBox(height: 6),
                               Row(
                                 children: [
-                                  Icon(_statusIcon(status), size: 16, color: _statusColor(context, status)),
+                                  Icon(_statusIcon(status),
+                                      size: 16, color: _statusColor(context, status)),
                                   const SizedBox(width: 6),
                                   Text(
                                     _statusText(status),
@@ -146,6 +170,8 @@ class DownloadsView extends StatelessWidget {
                                   ),
                                 ],
                               ),
+
+                              // Show progress bar + cancel button only if downloading
                               if (status == 'downloading') ...[
                                 const SizedBox(height: 8),
                                 ClipRRect(
@@ -154,10 +180,21 @@ class DownloadsView extends StatelessWidget {
                                     value: progress,
                                     minHeight: 4,
                                     backgroundColor: theme.dividerColor,
-                                    valueColor: AlwaysStoppedAnimation<Color>(_statusColor(context, status)),
+                                    valueColor: AlwaysStoppedAnimation<Color>(
+                                        _statusColor(context, status)),
                                   ),
                                 ),
+                                TextButton.icon(
+                                  onPressed: () {
+                                    context
+                                        .read<DownloadsBloc>()
+                                        .add(CancelDownload(track.infoHash));
+                                  },
+                                  icon: const Icon(Icons.cancel, size: 18),
+                                  label: const Text('Cancel'),
+                                ),
                               ],
+
                               const SizedBox(height: 6),
                               Text(
                                 folder,
@@ -182,4 +219,13 @@ class DownloadsView extends StatelessWidget {
       ),
     );
   }
+}
+
+class CancelDownload extends DownloadsEvent {
+  final String infoHash;
+
+  CancelDownload(this.infoHash);
+
+  @override
+  List<Object?> get props => [infoHash];
 }
